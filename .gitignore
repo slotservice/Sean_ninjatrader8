@@ -1,0 +1,24 @@
+# Client-private materials — not pushed to public repo.
+# Remove these lines if you want them in the repo.
+chat.md
+project_status&plan.md
+files/
+screenshot/
+
+# NT8 build artifacts (if anyone ever compiles inside this tree).
+bin/
+obj/
+*.dll
+*.pdb
+*.user
+*.suo
+
+# IDE / editor noise
+.vs/
+.vscode/
+.idea/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
