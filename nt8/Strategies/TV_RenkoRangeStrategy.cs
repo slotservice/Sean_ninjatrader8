@@ -372,9 +372,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (CurrentBar > 0)
                 {
-                    double prev = s_z_plot[1];
-                    double cur  = s_z_plot[0];
-                    s_z_dir[0]  = cur > prev ? 1 : cur < prev ? -1 : 0;
+                    double zPrev = s_z_plot[1];
+                    double zCur  = s_z_plot[0];
+                    s_z_dir[0]   = zCur > zPrev ? 1 : zCur < zPrev ? -1 : 0;
                 }
             }
 
@@ -407,9 +407,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (CurrentBar > 0)
                 {
-                    double prev = s_sl_plot[1];
-                    double cur  = s_sl_plot[0];
-                    s_sl_dir[0] = cur > prev ? 1 : cur < prev ? -1 : 0;
+                    double slPrev = s_sl_plot[1];
+                    double slCur  = s_sl_plot[0];
+                    s_sl_dir[0]   = slCur > slPrev ? 1 : slCur < slPrev ? -1 : 0;
                 }
             }
 
