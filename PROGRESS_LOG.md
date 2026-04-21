@@ -435,3 +435,32 @@ the `#region NinjaScript generated code` is **output**, never **input**.
 Re-compile (F5 a fourth time). Expected: "Compile succeeded" (green).
 This should be the last structural error class. If any new errors
 appear, paste them.
+
+---
+
+## 2026-04-21 — Fourth compile pass: SUCCESS ✓
+
+User ran F5 a fourth time. The red error panel is gone. NinjaScript
+Explorer now shows:
+- `AddOns\TV_SharedEnums` ✓
+- `Indicators\` (collapsed — contains all 7 TV_* indicators) ✓
+- `Strategies\TV_RenkoRangeStrategy` ✓
+
+Compile ran clean. All four compile passes have now resolved:
+1. Pass 1 — 7 × `ScaleJustification` qualification errors. FIXED.
+2. Pass 2 — 28 × duplicate MarketAnalyzerColumn / Strategy factory methods. FIXED.
+3. Pass 3 — 28 × duplicate Indicator partial-class factory methods. FIXED.
+4. Pass 4 — clean.
+
+### v1 code-complete status
+The NT8 code package compiles and is now runnable. This closes out the
+"compile in NT8" item of the three remaining v1 action items listed in
+the 2026-04-21 build-phase notes.
+
+Next actions (user-side):
+1. ~~Compile in NT8~~ **DONE**
+2. Provide 3–5 marked historical TradingView trades for side-by-side
+   signal-bar parity verification.
+3. Run NT8 Strategy Analyzer on the last 5 trading days, 09:33–12:00 NY,
+   and compare trade list + net PnL direction to TV playback per
+   `VALIDATION_CHECKLIST.md`.
