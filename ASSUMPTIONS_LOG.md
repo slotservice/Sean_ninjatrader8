@@ -60,7 +60,8 @@ Legend:
 
 | # | Assumption | Label |
 |---|------------|-------|
-| E1 | TradingView "Traditional Renko" 6-box maps to NT8 "Renko" 6-tick bricks as the closest available. Per client: signal behavior is priority, chart naming parity is not required. Residual brick-timing drift is the single biggest source of expected signal timing differences. | APPROX — documented, client-approved |
+| E1 | **CORRECTED 2026-04-22** — TradingView's "Traditional Renko" box size is expressed in **price points**, but NT8's built-in "Renko" bar type `Value` is expressed in **ticks**. For MNQ (tick 0.25), TV box 6 = 6 points = **NT8 `Value = 24`**. The initial setup used `Value = 6` which is 1.5 points per brick — 4× smaller than TV's 6-point bricks — which produced ~4× the signal count. Fix: always set `Value = 24` for MNQ to match TV box 6. For other instruments, `Value = box_size_in_points / tick_size`. | EXACT once the unit conversion is applied |
+| E1a | Even with brick size matched, NT8's Renko formation rule and TV's Traditional Renko formation rule are not byte-identical. This is the residual cross-platform difference after the E1 unit fix. A community "TradingView-style Renko" NT8 bar type can close it further if exact parity is required; otherwise acceptable per client's priority of signal behavior over chart naming. | APPROX — small, documented |
 | E2 | 1-second underlying data series on both platforms. NT8 is configured with "Price based on = Last" per the client's data-base page notes. | EXACT (mirror of TV setup) |
 
 ## F. Technical Ratings

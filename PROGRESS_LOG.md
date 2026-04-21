@@ -537,6 +537,96 @@ this is not a blocker (Technical Ratings was always off by default).
 
 ---
 
+## 2026-04-22 — Live-chart tuning: signal-count parity reached
+
+### Context
+Client applied the monolithic strategy to a live MNQ Renko chart during
+the NYC morning session. Strategy ran without errors. Client then
+reported two observations:
+
+1. Visual chart sometimes shows a lone "Buy" / "Sell" text without an
+   associated order ticket. Clarified: this is a same-direction
+   redundant signal that fired while the strategy was already in that
+   direction; `EntriesPerDirection = 1` correctly prevents adding a
+   second lot. Chart draws the detection marker but no order is placed.
+   Offered to suppress these redundant markers as a future option;
+   client preferred to keep them visible for now.
+
+2. NT8 was generating significantly more trades than TradingView over
+   the same time window (~20+ on NT8 vs ~4 on TV per 15-minute window).
+   Client hypothesis: "the range filter is more sensitive on this type
+   of renko chart."
+
+### Parameter-tuning attempt (did not resolve)
+Client raised `Range Multiplier` from `0.1` → `0.5` and `Sampling Period`
+from `240` → `480`. Signal count reduced but strategy was still chopping
+in and out of trends rather than holding through big pushes.
+
+### Root cause found — Renko Value unit mismatch (not a tuning issue)
+- NT8's built-in Renko `Value` field is in **ticks**.
+- TradingView's Traditional Renko box size is in **points**.
+- For MNQ (tick 0.25), `Value = 6` on NT8 = **1.5 points per brick**.
+- TV box size 6 = **6.00 points per brick**.
+- That's a **4× scale mismatch**. NT8 was producing 4× more bricks than
+  TV over the same price path, so the Range Filter saw 4× more data
+  points and fired ~4× more signals.
+
+No amount of Range Filter parameter tuning can compensate for brick
+data that arrives 4× more frequently than the tuning was calibrated for.
+
+### Fix
+Client changed the NT8 chart's `Data Series → Value` from `6` to `24`
+and reverted Range Filter parameters to the defaults (`Sampling Period
+= 240`, `Range Multiplier = 0.1`).
+
+### Result
+Over a roughly 1 h 45 min window (09:35–11:18 NY), NT8 produced ~20–25
+trades, matching TV's ~3–4 trades per 15-minute window pace. Client
+confirmed:
+
+> *"this is already looking better, this looks much closer to the TV
+> chart and also its seemingly not chopping out at big trend pushes —
+> which is key to this strategy."*
+
+Signal-count parity is effectively reached. Residual fine-timing
+differences are expected due to the NT8-vs-TV brick *formation* rule
+difference (not size) — documented in `ASSUMPTIONS_LOG §E1a`. A
+community "TradingView-style Renko" NT8 bar type can close the residual
+if the client wants exact bar-by-bar parity; otherwise current setup
+is acceptable per the locked spec ("signal behavior is priority,
+chart naming parity is not required").
+
+### Docs updated in this milestone
+- `INSTALL_NOTES.md §3` — critical `Value = 24` setup note added
+  prominently; troubleshooting §8 cross-references it; §7 difference
+  table updated.
+- `ASSUMPTIONS_LOG.md §E1` — corrected; §E1a added for the residual
+  formation-rule difference.
+- `PROGRESS_LOG.md` — this entry.
+
+### Notes on the Basic vs Advanced Builder gap
+Client had previously described Crosstrade.io's **Advanced Builder**
+as subscription-gated and the source of TV's profitability over the
+open-source **Basic Builder**. Only the Basic Builder source was ever
+delivered, so the port faithfully implements Basic Builder logic.
+Any day where TV's Advanced Builder outperforms NT8 by more than the
+brick-formation residual will be traceable to that paywalled filter
+delta, which cannot be replicated without its source. If the client
+wants generic anti-chop heuristics (min-bricks-between-entries,
+hold-duration floor, consecutive-signal confirmation count), they can
+be added as optional strategy parameters — client has been offered
+this and has deferred.
+
+### Outstanding items for v1 sign-off (carried forward)
+1. Client to sim-trade this week during the NYC session.
+2. Client to run NT8 Strategy Analyzer on last 5 trading days of MNQ
+   (Renko, **Value = 24**, Days to load = 5) and compare the trades tab
+   against TV bar replay.
+3. Client to flag any specific bars where NT8 fires and TV doesn't
+   (or vice versa) for targeted investigation.
+
+---
+
 ## 2026-04-21 — Fourth compile pass: SUCCESS ✓
 
 User ran F5 a fourth time. The red error panel is gone. NinjaScript
