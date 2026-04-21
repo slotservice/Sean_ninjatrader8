@@ -1006,8 +1006,9 @@ Compiled clean on freelancer's dev machine on first attempt.
    strategy file, F5 to confirm green compile on the client install.
 4. Sean runs with defaults (canonical chain reproduced via dropdowns),
    then experiments with rewiring sources for his test variations.
-5. Quick confirmation question to Sean: COG LSMA Length 200 vs 120
-   (we built with 200 — see ASSUMPTIONS §A25).
+5. ~~Quick confirmation question to Sean: COG LSMA Length 200 vs 120~~
+   **Confirmed by Sean 2026-04-22 PM: 200 is correct.** Build already
+   matches; no code change needed.
 
 ### Scope note (carried forward)
 Third post-spec feature add (anti-chop pack → COG → Source dropdowns).
