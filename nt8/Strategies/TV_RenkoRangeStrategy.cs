@@ -48,6 +48,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TV_RangeFilter   rangeFilter;
         private TV_TechnicalRatingsApprox techRatings;
 
+        // Indicator cache arrays for CacheIndicator<T> calls.
+        // Using CacheIndicator<T> directly (instead of NT8's auto-generated
+        // factory methods like `TV_MacZLSMA(Close, …)`) means this strategy
+        // works even when NT8's factory-method auto-generator hasn't produced
+        // the Strategy partial-class methods — which we saw fail on some
+        // NT8 installs due to a stale @Strategy.cs file.
+        private TV_MacZLSMA[]               cacheMacZ;
+        private TV_ZLSMA[]                  cacheZlsma;
+        private TV_LSMACrossover[]          cacheLsmac;
+        private TV_SLSMA[]                  cacheSlsma;
+        private TV_StochRVI[]               cacheStochRvi;
+        private TV_RangeFilter[]            cacheRangeFilter;
+        private TV_TechnicalRatingsApprox[] cacheTechRatings;
+
         // ---- Session state ----
         private TimeZoneInfo nyTz;
 
@@ -146,15 +160,59 @@ namespace NinjaTrader.NinjaScript.Strategies
                 catch { nyTz = TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
 
                 // Wire the source chain — each indicator is fed by the upstream plot it should read.
-                macZ      = TV_MacZLSMA(Close,              MacZLength, MacZOffset, MacZTriggerLength);
-                zlsma     = TV_ZLSMA   (macZ.ZLSMA2Plot,    ZLSMALength, ZLSMAOffset);
-                lsmac     = TV_LSMACrossover(zlsma.ZLSMAPlot, LSMACLength, LSMACOffset, LSMACTriggerLength, LSMACLongLength, LSMACExtraLongLen);
-                slsma     = TV_SLSMA   (lsmac.TriggerPlot,  SLSMALength, SLSMAOffset);
-                stochRvi  = TV_StochRVI(slsma.SLSMAPlot,    RVILength, StochK, StochD, StochLength);
-                rangeFilter = TV_RangeFilter(stochRvi.KPlot, SamplingPeriod, RangeMultiplier);
+                // Uses CacheIndicator<T>() directly (protected method on NinjaScriptBase) so the
+                // strategy does not depend on NT8's factory-method auto-generator producing
+                // Strategy-partial-class factory methods. Some NT8 installs fail to regenerate
+                // @Strategy.cs, which makes factory calls like `TV_MacZLSMA(Close, …)` resolve
+                // to the TYPE rather than a method (CS1955). Calling CacheIndicator<T> by hand
+                // removes that dependency entirely and works on every NT8 install.
+                macZ = CacheIndicator<TV_MacZLSMA>(new TV_MacZLSMA
+                {
+                    Length        = MacZLength,
+                    Offset        = MacZOffset,
+                    TriggerLength = MacZTriggerLength
+                }, Close, ref cacheMacZ);
+
+                zlsma = CacheIndicator<TV_ZLSMA>(new TV_ZLSMA
+                {
+                    Length = ZLSMALength,
+                    Offset = ZLSMAOffset
+                }, macZ.ZLSMA2Plot, ref cacheZlsma);
+
+                lsmac = CacheIndicator<TV_LSMACrossover>(new TV_LSMACrossover
+                {
+                    Length          = LSMACLength,
+                    Offset          = LSMACOffset,
+                    TriggerLength   = LSMACTriggerLength,
+                    LongLength      = LSMACLongLength,
+                    ExtraLongLength = LSMACExtraLongLen
+                }, zlsma.ZLSMAPlot, ref cacheLsmac);
+
+                slsma = CacheIndicator<TV_SLSMA>(new TV_SLSMA
+                {
+                    Length = SLSMALength,
+                    Offset = SLSMAOffset
+                }, lsmac.TriggerPlot, ref cacheSlsma);
+
+                stochRvi = CacheIndicator<TV_StochRVI>(new TV_StochRVI
+                {
+                    RviLength   = RVILength,
+                    SmoothK     = StochK,
+                    SmoothD     = StochD,
+                    StochLength = StochLength
+                }, slsma.SLSMAPlot, ref cacheStochRvi);
+
+                rangeFilter = CacheIndicator<TV_RangeFilter>(new TV_RangeFilter
+                {
+                    SamplingPeriod  = SamplingPeriod,
+                    RangeMultiplier = RangeMultiplier
+                }, stochRvi.KPlot, ref cacheRangeFilter);
 
                 if (UseTechnicalRatings)
-                    techRatings = TV_TechnicalRatingsApprox(Close, TechRatingsMAWeight);
+                    techRatings = CacheIndicator<TV_TechnicalRatingsApprox>(new TV_TechnicalRatingsApprox
+                    {
+                        MAWeightPercent = TechRatingsMAWeight
+                    }, Close, ref cacheTechRatings);
 
                 // Show the full chain on the chart so you can eyeball each stage visually
                 // against the TradingView reference during side-by-side validation.
