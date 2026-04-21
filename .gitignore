@@ -5,6 +5,10 @@ project_status&plan.md
 files/
 screenshot/
 
+# Internal session-handoff doc — references the freelance/client setup
+# by name, intentionally kept out of the client-facing repo.
+HANDOFF.md
+
 # NT8 build artifacts (if anyone ever compiles inside this tree).
 bin/
 obj/
