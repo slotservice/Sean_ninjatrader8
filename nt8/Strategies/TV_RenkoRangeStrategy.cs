@@ -100,6 +100,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int pendingReentryDir;
         private int pendingReentryBar;
 
+        // Anti-chop bookkeeping (used by group "05 Anti-chop filters" params)
+        private int lastTradeBar = -1;   // CurrentBar of most recent entry OR exit
+        private int entryBar     = -1;   // CurrentBar at which the current open position was entered
+
         // ==================================================================
         // State lifecycle
         // ==================================================================
@@ -164,6 +168,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 SamplingPeriod  = 240;
                 RangeMultiplier = 0.1;
+
+                // Anti-chop filters — all default to 0 (disabled). Existing behavior is unchanged unless enabled.
+                MinBarsBetweenEntries  = 0;
+                MinHoldBars            = 0;
+                SignalConfirmationBars = 0;
             }
             else if (State == State.DataLoaded)
             {
@@ -248,6 +257,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (Position.MarketPosition == MarketPosition.Short)
                     ExitShort(Convert.ToInt32(Position.Quantity), SIG_SESSION_END, SIG_SHORT);
 
+                lastTradeBar      = CurrentBar;
+                entryBar          = -1;
                 pendingReentryDir = 0;
                 return;
             }
@@ -261,6 +272,38 @@ namespace NinjaTrader.NinjaScript.Strategies
             int signalDir = (int)Math.Sign(rfSignal);
             bool aligned  = CheckAlignment(signalDir);
 
+            // ---- Anti-chop filters (group "05 Anti-chop filters") ----
+            // Only relevant when there is an active signal this bar (signalDir != 0).
+            // Each filter early-returns to skip both pending re-entry AND new entry/exit
+            // attempts for this bar.
+            if (signalDir != 0)
+            {
+                // Filter 3: SignalConfirmationBars — RF direction must have been
+                // consistent with signalDir for the prior N bars (current bar inclusive).
+                if (SignalConfirmationBars > 0)
+                {
+                    if (CurrentBar < SignalConfirmationBars) return;
+                    for (int i = 0; i < SignalConfirmationBars; i++)
+                        if ((int)s_rf_dir[i] != signalDir) return;
+                }
+
+                // Filter 1: MinBarsBetweenEntries — cooldown after any prior trade.
+                if (MinBarsBetweenEntries > 0 && lastTradeBar >= 0
+                    && CurrentBar - lastTradeBar < MinBarsBetweenEntries) return;
+
+                // Filter 2: MinHoldBars — block opposite-direction signal until current
+                // position has been open at least N bars. Same-direction signals are
+                // unaffected (they're already filtered by EntriesPerDirection = 1).
+                if (MinHoldBars > 0 && entryBar >= 0
+                    && CurrentBar - entryBar < MinHoldBars)
+                {
+                    bool oppositeOfPosition =
+                        (Position.MarketPosition == MarketPosition.Long  && signalDir < 0) ||
+                        (Position.MarketPosition == MarketPosition.Short && signalDir > 0);
+                    if (oppositeOfPosition) return;
+                }
+            }
+
             // ---- Pending re-entry (FlattenFirst mode) ----
             if (pendingReentryDir != 0 && CurrentBar > pendingReentryBar)
             {
@@ -271,6 +314,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (pendingReentryDir > 0) EnterLong (Quantity, SIG_LONG);
                     else                       EnterShort(Quantity, SIG_SHORT);
                     pendingReentryDir = 0;
+                    entryBar          = CurrentBar;
+                    lastTradeBar      = CurrentBar;
                     return;
                 }
                 if (signalDir != 0 && signalDir != pendingReentryDir)
@@ -297,9 +342,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (Position.MarketPosition == MarketPosition.Short)
                 {
                     ExitShort(Convert.ToInt32(Position.Quantity), SIG_EXIT_SHORT, SIG_SHORT);
+                    lastTradeBar = CurrentBar;
+                    entryBar     = -1;
 
                     if (ReversalEnabled && !FlattenFirst)
+                    {
                         EnterLong(Quantity, SIG_LONG);
+                        entryBar = CurrentBar;
+                    }
                     else if (ReversalEnabled && FlattenFirst)
                     {
                         pendingReentryDir = +1;
@@ -309,6 +359,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (Position.MarketPosition == MarketPosition.Flat)
                 {
                     EnterLong(Quantity, SIG_LONG);
+                    entryBar     = CurrentBar;
+                    lastTradeBar = CurrentBar;
                 }
             }
             else if (signalDir < 0)
@@ -316,9 +368,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (Position.MarketPosition == MarketPosition.Long)
                 {
                     ExitLong(Convert.ToInt32(Position.Quantity), SIG_EXIT_LONG, SIG_LONG);
+                    lastTradeBar = CurrentBar;
+                    entryBar     = -1;
 
                     if (ReversalEnabled && !FlattenFirst)
+                    {
                         EnterShort(Quantity, SIG_SHORT);
+                        entryBar = CurrentBar;
+                    }
                     else if (ReversalEnabled && FlattenFirst)
                     {
                         pendingReentryDir = -1;
@@ -328,6 +385,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (Position.MarketPosition == MarketPosition.Flat)
                 {
                     EnterShort(Quantity, SIG_SHORT);
+                    entryBar     = CurrentBar;
+                    lastTradeBar = CurrentBar;
                 }
             }
         }
@@ -647,6 +706,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty][Range(1, int.MaxValue)]      [Display(Name = "Sampling Period",  Order = 1, GroupName = "15 Range Filter")] public int    SamplingPeriod  { get; set; }
         [NinjaScriptProperty][Range(0.01, double.MaxValue)][Display(Name = "Range Multiplier", Order = 2, GroupName = "15 Range Filter")] public double RangeMultiplier { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Min Bars Between Entries", Description = "Skip new entries for N bars after any prior entry/exit. 0 disables.", Order = 1, GroupName = "05 Anti-chop filters")]
+        public int MinBarsBetweenEntries { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Min Hold Bars", Description = "Block opposite-direction (exit/reverse) signals until current position has been open at least N bars. 0 disables.", Order = 2, GroupName = "05 Anti-chop filters")]
+        public int MinHoldBars { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Signal Confirmation Bars", Description = "Range Filter direction must be consistent for the prior N bars (current bar inclusive) before a signal can fire. 0 disables.", Order = 3, GroupName = "05 Anti-chop filters")]
+        public int SignalConfirmationBars { get; set; }
         #endregion
     }
 }

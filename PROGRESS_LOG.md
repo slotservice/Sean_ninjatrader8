@@ -719,3 +719,86 @@ reliably handle sub-namespaces on all NT8 builds.
   `TV_RenkoRangeStrategy.cs` strategy file with the newly-pushed versions,
   then F5. If `@Strategy.cs` still appears stale after a compile cycle,
   deleting it manually and recompiling forces NT8 to regenerate it.
+
+---
+
+## 2026-04-22 — Anti-chop filters added (group "05 Anti-chop filters")
+
+### Context
+Following the signal-count parity milestone (Value = 24 fix earlier today),
+client asked for generic anti-chop safeguards so he can tune the strategy
+away from whipsaw without touching indicator parameters. The filters are
+offered as strategy-level gates — not as changes to the seven-indicator
+chain itself. This was previously noted as an offered-but-deferred option
+in the earlier "Live-chart tuning" entry; client has now opted in.
+
+### Client clarification before build
+Client asked whether SignalConfirmationBars would *skip* signals that fail
+confirmation or *delay* them. Confirmed: this build uses the look-back
+confirm pattern (drop signals whose Range Filter direction wasn't already
+consistent for N bars). Client accepted the lookback variant as the
+"proven technique" path; no delayed-entry variant is built.
+
+### Params added (all `int`, default `0` = disabled, group "05 Anti-chop filters")
+1. **MinBarsBetweenEntries** — after any entry OR exit (tracked by
+   `lastTradeBar`), skip all trade-causing code paths for N bars. Applies
+   to new entries, reversals, and FlattenFirst pending re-entries alike.
+2. **MinHoldBars** — if the current open position has been held fewer than
+   N bars (`CurrentBar - entryBar < N`), opposite-direction signals are
+   dropped. Same-direction signals are unaffected (those are already
+   filtered by `EntriesPerDirection = 1`). Does not apply when flat.
+3. **SignalConfirmationBars** — when a Range Filter signal fires, check
+   `s_rf_dir[0..N-1]` — all must equal `signalDir`. If not, drop the
+   signal. Drops, does not delay.
+
+### Bookkeeping
+- Two private fields added: `lastTradeBar` and `entryBar`, both initialised
+  to `-1` so the first-signal-of-session path isn't accidentally blocked
+  by the MinBarsBetweenEntries or MinHoldBars checks.
+- Updated at every order-method call site in `OnBarUpdate`:
+  - Flat → Long/Short: `entryBar = lastTradeBar = CurrentBar`.
+  - Reversal (Short→Long or Long→Short via Exit+Enter): `lastTradeBar` set
+    on both the exit and the re-enter; `entryBar` reset to `-1` on exit
+    and set to `CurrentBar` on the new entry.
+  - FlattenFirst exit: `lastTradeBar` set, `entryBar` reset to `-1`.
+    `entryBar` will be set when the pending re-entry actually fires.
+  - Pending re-entry success path: `entryBar = lastTradeBar = CurrentBar`.
+  - Session-end force-flat: `lastTradeBar = CurrentBar`, `entryBar = -1`.
+
+### Gate placement
+All three checks live in `OnBarUpdate` after `signalDir` and `aligned` are
+computed, and BEFORE the pending re-entry block. This deliberately gates
+pending re-entries too — the filter intent is "no new trade for N bars"
+regardless of which code path would place it. Placed inside
+`if (signalDir != 0)` so a zero-signal bar doesn't accidentally consume
+the SignalConfirmationBars check against a zero comparison.
+
+### Behaviour when all three are at default (0)
+No change — every `> 0` guard short-circuits and execution falls through
+to the existing entry/exit block. Verified by inspection: no diff in
+observable behaviour between the pre-anti-chop build and the new build
+with defaults.
+
+### Compile status
+Compiled clean on freelancer's dev machine on first attempt. Not yet
+compiled on client's PC — scheduled as step 2 of rollout.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — params, fields, gate, and
+  bookkeeping at every order-submission site.
+- `PROGRESS_LOG.md` — this entry.
+
+### Rollout plan
+1. ~~Freelancer local F5~~ **DONE — green.**
+2. Commit + push to `origin/main`.
+3. Client to `git pull`, copy `TV_RenkoRangeStrategy.cs` into NT8's
+   `Custom\Strategies\` folder, F5 to confirm clean compile on his PC.
+4. Client runs the strategy as-is (all three filters at default 0) to
+   confirm no behaviour change. Then tunes one filter at a time.
+
+### Tuning guidance offered to client
+Start with `SignalConfirmationBars = 2` (his suggested default), leave
+the other two at 0. Compare signal count + win rate against current
+baseline. If chop persists, layer `MinBarsBetweenEntries = 2` next.
+`MinHoldBars` is the heaviest — only raise it if individual trades are
+being stopped out right after entry by counter-signals.
