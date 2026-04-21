@@ -28,6 +28,12 @@ Legend:
 | A13 | Stoch RVI direction | `K > D` → up. Standard reading of Stoch RVI cross. | APPROX (Pine file does not declare a "direction"; this is the established visual read) |
 | A14 | Range Filter direction (used in alignment vote) | `upward > 0` → up, `downward > 0` → down. Mirrors Pine's bar-color rule. | EXACT |
 | A15 | Range Filter signal bar | `longCondition = longCond AND CondIni[1] == -1` — one-shot transition, ported verbatim. | EXACT |
+| A16 | Pine `cog(src, length)` | `-Σ(src[i] * (i+1)) / Σ(src[i])` for i=0..length-1, where i=0 is the most recent bar. Standard Center of Gravity formula. Manual loop in `ComputeChain` Stage 0. | EXACT |
+| A17 | Pine `alma(src, window, offset, sigma)` | `m = offset*(window-1)`, `s = window/sigma`, `weight[i] = exp(-(i-m)² / (2s²))`, result = `Σ(weight[i] * src[window-1-i]) / Σ(weight[i])`. Standard Arnaud Legoux MA formula; `src[window-1-i]` indexing matches Pine's so the heaviest weight lands on the most recent bar when offset ≈ 0.85. | EXACT |
+| A18 | COG smoothing variant | Pine source offers `NONE` or `RMA`. Sean's spec calls for `NONE` or `SMA`. Implemented as Sean specified — toggle is `COGSmoothingEnabled` (off = NONE, on = SMA over `COGSmoothingLength`). RMA path from Pine is **not** ported. | EXACT-of-spec, **DEVIATION-from-Pine** (intentional, per client) |
+| A19 | COG direction (used in alignment vote) | `raw_cog > trigger` → +1, `raw_cog < trigger` → −1. Mirrors Pine's `enter = crossover(COG1, trigger)` — note Pine compares the *raw* COG to the trigger, not the smoothed `COG`. | EXACT |
+| A20 | COG visual-only Pine inputs (Prev High/Low Length, LSMA Length, Fib Length) | NOT exposed on the strategy panel — they have no effect on signal logic. Belong on a standalone `TV_COG.cs` chart indicator if added later. | EXACT (signal-irrelevant) |
+| A21 | COG → macZLSMA chain insertion | When `UseCOGInChain = true` (default), macZLSMA's source switches from `Close` to `s_cog_plot` (the smoothed-or-not COG output). When false, macZLSMA reads `Close` as in the original spec — making COG-vs-no-COG a one-click A/B test. Every downstream stage automatically inherits the change because they each read from their immediate upstream stage. | EXACT-of-spec |
 
 ## B. Alignment semantics
 

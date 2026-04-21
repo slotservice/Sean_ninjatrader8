@@ -15,18 +15,25 @@ must agree with the signal direction).
 ## 2. Default source chain
 
 ```
-Close → macZLSMA → ZLSMA → LSMA Crossover.Trigger → SLSMA → Stoch RVI.K → Range Filter
-                                                                           (+ optional Technical Ratings)
+Close → Center of Gravity → macZLSMA → ZLSMA → LSMA Crossover.Trigger → SLSMA → Stoch RVI.K → Range Filter
+                                                                                                (+ optional Technical Ratings)
 ```
 
 Technical Ratings is last, unchecked by default, and does not participate in
 the chain — it sits alongside as an optional confirmation vote.
 
+**Note (2026-04-22):** Center of Gravity was added at Sean's request as the
+new chain bottom (replacing Close as macZLSMA's source). It is toggleable
+via the `Use COG in chain` strategy parameter — when off, macZLSMA reads
+Close as in the original spec. This makes the COG-vs-no-COG comparison a
+one-click A/B test on the strategy panel.
+
 ## 3. Default settings (locked by client)
 
 | Indicator | Settings |
 | --- | --- |
-| macZLSMA | length 2, offset 0, trigger 3, source Close |
+| Center of Gravity *(added 2026-04-22)* | length 2, smoothing NONE (SMA alt, length 2), trigger ALMA window 3 / offset 0.85 / sigma 6, source Close |
+| macZLSMA | length 2, offset 0, trigger 3, source **COG plot** (was Close — toggleable via `Use COG in chain`) |
 | ZLSMA | length 2, offset 0, source macZLSMA |
 | LSMA Crossover | length 2, offset 0, trigger 4, source ZLSMA |
 | SLSMA | length 2, offset 0, source LSMAC.Trigger (reconstructed indicator) |

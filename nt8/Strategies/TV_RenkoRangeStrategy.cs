@@ -12,9 +12,10 @@
 // visual comparison. The strategy simply no longer references them as types
 // or methods.
 //
-// Chain (defaults from XTBUILDER2.8.4):
-//     Close → macZLSMA → ZLSMA → LSMA Crossover.Trigger
-//           → SLSMA    → Stoch RVI.K → Range Filter
+// Chain (defaults from XTBUILDER2.8.4 + Sean 2026-04-22 extension):
+//     Close → Center of Gravity → macZLSMA → ZLSMA → LSMA Crossover.Trigger
+//           → SLSMA → Stoch RVI.K → Range Filter
+// Center of Gravity is the new chain bottom (toggleable via UseCOGInChain).
 //
 // Install: Documents\NinjaTrader 8\bin\Custom\Strategies\TV_RenkoRangeStrategy.cs
 // =============================================================================
@@ -39,6 +40,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ------------------------------------------------------------------
         // Intermediate series — allocated in State.DataLoaded.
         // ------------------------------------------------------------------
+        // Stage 0: Center of Gravity (added 2026-04-22 — new chain bottom)
+        private Series<double> s_cog_raw;       // raw cog(src, length)
+        private Series<double> s_cog_plot;      // smoothed-or-not — feeds macZLSMA when UseCOGInChain
+        private Series<double> s_cog_trigger;   // alma trigger line
+        private Series<double> s_cog_dir;       // +1 if raw > trigger, -1 if raw < trigger, 0 otherwise
+
         // Stage 1: macZLSMA
         private Series<double> s_mz_lsma;
         private Series<double> s_mz_zlsma2;
@@ -111,7 +118,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "TradingView → NT8 port (monolithic): macZLSMA → ZLSMA → LSMA Crossover → SLSMA → Stoch RVI → Range Filter. NYC-session automated Renko strategy.";
+                Description = "TradingView → NT8 port (monolithic): Center of Gravity → macZLSMA → ZLSMA → LSMA Crossover → SLSMA → Stoch RVI → Range Filter. NYC-session automated Renko strategy.";
                 Name        = "TV_RenkoRangeStrategy";
                 Calculate   = Calculate.OnBarClose;
 
@@ -140,12 +147,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SessionStart = new TimeSpan(9, 33, 0);
                 SessionEnd   = new TimeSpan(12, 0, 0);
 
+                UseCOGFilter         = true;
                 UseMacZLSMAFilter    = true;
                 UseZLSMAFilter       = true;
                 UseLSMACFilter       = true;
                 UseSLSMAFilter       = true;
                 UseStochRVIFilter    = true;
                 UseTechRatingsFilter = false;
+
+                // Center of Gravity (Sean spec 2026-04-22)
+                UseCOGInChain       = true;
+                COGLength           = 2;
+                COGSmoothingEnabled = false;   // NONE by default; SMA is the alternative
+                COGSmoothingLength  = 2;
+                COGTriggerWindow    = 3;       // Pine ALMA defaults; Sean did not override
+                COGTriggerOffset    = 0.85;
+                COGTriggerSigma     = 6.0;
 
                 MacZLength        = 2;
                 MacZOffset        = 0;
@@ -178,6 +195,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 try   { nyTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
                 catch { nyTz = TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
+
+                s_cog_raw     = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_cog_plot    = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_cog_trigger = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_cog_dir     = new Series<double>(this, MaximumBarsLookBack.Infinite);
 
                 s_mz_lsma     = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_mz_zlsma2   = new Series<double>(this, MaximumBarsLookBack.Infinite);
@@ -396,11 +418,61 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ==================================================================
         private void ComputeChain()
         {
-            // ---------------- Stage 1: macZLSMA ----------------
-            // lsma = linreg(Close, L, O); lsma2 = linreg(lsma, L, O); zlsma2 = 2*lsma - lsma2
+            // ---------------- Stage 0: Center of Gravity (input = Close) ----------------
+            // raw_cog = -Σ(src[i] * (i+1)) / Σ(src[i]) over length bars (Pine cog() formula).
+            // plot = sma(raw_cog, SmoothingLength) when COGSmoothingEnabled, else raw_cog.
+            // trigger = ALMA(plot, window, offset, sigma)  — Arnaud Legoux MA, standard formula.
+            // direction = +1 if raw > trigger else -1  (mirrors Pine's enter = crossover(COG1, trigger)).
+            if (CurrentBar >= COGLength - 1)
+            {
+                double sumNum = 0.0, sumDen = 0.0;
+                for (int i = 0; i < COGLength; i++)
+                {
+                    double v = Close[i];
+                    sumNum += v * (i + 1);
+                    sumDen += v;
+                }
+                s_cog_raw[0] = sumDen == 0.0 ? 0.0 : -sumNum / sumDen;
+            }
+
+            // Plot = smoothed-or-not (always set so downstream stages always have a valid source).
+            if (COGSmoothingEnabled && CurrentBar >= (COGLength - 1) + (COGSmoothingLength - 1))
+            {
+                double sm = 0.0;
+                for (int i = 0; i < COGSmoothingLength; i++) sm += s_cog_raw[i];
+                s_cog_plot[0] = sm / COGSmoothingLength;
+            }
+            else
+            {
+                s_cog_plot[0] = s_cog_raw[0];
+            }
+
+            // ALMA trigger on the plot value; direction vote uses raw vs trigger.
+            if (CurrentBar >= COGTriggerWindow - 1)
+            {
+                double m     = COGTriggerOffset * (COGTriggerWindow - 1);
+                double sigma = COGTriggerWindow / COGTriggerSigma;
+                double sumW  = 0.0, sumWX = 0.0;
+                for (int i = 0; i < COGTriggerWindow; i++)
+                {
+                    double dx = i - m;
+                    double w  = Math.Exp(-(dx * dx) / (2.0 * sigma * sigma));
+                    sumW  += w;
+                    sumWX += w * s_cog_plot[COGTriggerWindow - 1 - i];
+                }
+                s_cog_trigger[0] = sumW == 0.0 ? 0.0 : sumWX / sumW;
+
+                double cogR = s_cog_raw[0];
+                double cogT = s_cog_trigger[0];
+                s_cog_dir[0] = cogR > cogT ? 1 : cogR < cogT ? -1 : 0;
+            }
+
+            // ---------------- Stage 1: macZLSMA (input = COG plot OR Close) ----------------
+            // lsma = linreg(src, L, O); lsma2 = linreg(lsma, L, O); zlsma2 = 2*lsma - lsma2
             // trigger = sma(zlsma2, L2); direction = +1 if zlsma2 > trigger else -1
+            ISeries<double> macZSrc = UseCOGInChain ? (ISeries<double>)s_cog_plot : (ISeries<double>)Close;
             if (CurrentBar >= MacZLength - 1)
-                s_mz_lsma[0] = LinReg(Close, MacZLength, MacZOffset, 0);
+                s_mz_lsma[0] = LinReg(macZSrc, MacZLength, MacZOffset, 0);
             if (CurrentBar >= (2 * MacZLength) - 2)
             {
                 double lsma2 = LinRegOnSeries(s_mz_lsma, MacZLength, MacZOffset, 0);
@@ -639,11 +711,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool CheckAlignment(int signalDir)
         {
             if (signalDir == 0) return false;
-            if (UseMacZLSMAFilter && (int)s_mz_dir[0] != signalDir) return false;
-            if (UseZLSMAFilter    && (int)s_z_dir[0]  != signalDir) return false;
-            if (UseLSMACFilter    && (int)s_lc_dir[0] != signalDir) return false;
-            if (UseSLSMAFilter    && (int)s_sl_dir[0] != signalDir) return false;
-            if (UseStochRVIFilter && (int)s_sr_dir[0] != signalDir) return false;
+            if (UseCOGFilter      && (int)s_cog_dir[0] != signalDir) return false;
+            if (UseMacZLSMAFilter && (int)s_mz_dir[0]  != signalDir) return false;
+            if (UseZLSMAFilter    && (int)s_z_dir[0]   != signalDir) return false;
+            if (UseLSMACFilter    && (int)s_lc_dir[0]  != signalDir) return false;
+            if (UseSLSMAFilter    && (int)s_sl_dir[0]  != signalDir) return false;
+            if (UseStochRVIFilter && (int)s_sr_dir[0]  != signalDir) return false;
             return true;
         }
 
@@ -677,6 +750,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Force Flat at Session End", Order = 3, GroupName = "03 Session")]
         public bool ForceFlatAtSessionEnd { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Use Center of Gravity filter", Order = 0, GroupName = "04 Alignment filters", Description = "When on, COG direction must agree with the trade signal before entry. COG must also be in the chain (see group 09).")] public bool UseCOGFilter        { get; set; }
         [NinjaScriptProperty][Display(Name = "Use macZLSMA as filter",    Order = 1, GroupName = "04 Alignment filters")] public bool UseMacZLSMAFilter   { get; set; }
         [NinjaScriptProperty][Display(Name = "Use ZLSMA as filter",       Order = 2, GroupName = "04 Alignment filters")] public bool UseZLSMAFilter      { get; set; }
         [NinjaScriptProperty][Display(Name = "Use LSMA Crossover filter", Order = 3, GroupName = "04 Alignment filters")] public bool UseLSMACFilter      { get; set; }
@@ -684,6 +758,34 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Display(Name = "Use Stoch RVI as filter",   Order = 5, GroupName = "04 Alignment filters")] public bool UseStochRVIFilter   { get; set; }
         [NinjaScriptProperty][Display(Name = "Use Tech Ratings filter",   Order = 6, GroupName = "04 Alignment filters", Description = "Reserved — Technical Ratings approximation not included in monolithic build.")] public bool UseTechRatingsFilter { get; set; }
         [NinjaScriptProperty][Display(Name = "Use Technical Ratings",     Order = 7, GroupName = "04 Alignment filters", Description = "Reserved — not wired in monolithic build.")] public bool UseTechnicalRatings { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use COG in chain", Order = 1, GroupName = "09 Center of Gravity", Description = "When on, macZLSMA reads from COG instead of Close — COG becomes the new chain bottom. When off, the chain runs from Close as before (signal-count parity to pre-COG baseline).")]
+        public bool UseCOGInChain { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Length", Order = 2, GroupName = "09 Center of Gravity")]
+        public int COGLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Smoothing (SMA)", Order = 3, GroupName = "09 Center of Gravity", Description = "Off = no smoothing (Pine 'NONE'). On = SMA over Smoothing Length. Sean's spec: NONE default, SMA alternative.")]
+        public bool COGSmoothingEnabled { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Smoothing Length", Order = 4, GroupName = "09 Center of Gravity", Description = "Used only when Smoothing (SMA) is on.")]
+        public int COGSmoothingLength { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Trigger Window", Order = 5, GroupName = "09 Center of Gravity", Description = "ALMA window for the trigger line.")]
+        public int COGTriggerWindow { get; set; }
+
+        [NinjaScriptProperty][Range(0.0, 1.0)]
+        [Display(Name = "Trigger Offset", Order = 6, GroupName = "09 Center of Gravity", Description = "ALMA offset (0..1). Pine default 0.85.")]
+        public double COGTriggerOffset { get; set; }
+
+        [NinjaScriptProperty][Range(0.01, double.MaxValue)]
+        [Display(Name = "Trigger Sigma", Order = 7, GroupName = "09 Center of Gravity", Description = "ALMA sigma (controls weight curve sharpness). Pine default 6.")]
+        public double COGTriggerSigma { get; set; }
 
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Length",         Order = 1, GroupName = "10 macZLSMA")] public int MacZLength { get; set; }
         [NinjaScriptProperty][Range(0, int.MaxValue)][Display(Name = "Offset",         Order = 2, GroupName = "10 macZLSMA")] public int MacZOffset { get; set; }

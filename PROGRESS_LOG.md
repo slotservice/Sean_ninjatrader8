@@ -791,9 +791,11 @@ compiled on client's PC — scheduled as step 2 of rollout.
 ### Rollout plan
 1. ~~Freelancer local F5~~ **DONE — green.**
 2. Commit + push to `origin/main`.
-3. Client to `git pull`, copy `TV_RenkoRangeStrategy.cs` into NT8's
-   `Custom\Strategies\` folder, F5 to confirm clean compile on his PC.
-4. Client runs the strategy as-is (all three filters at default 0) to
+3. **Freelancer** connects to client PC via AnyDesk, pulls latest, drops
+   strategy file into NT8's `Custom\Strategies\`, F5 to confirm green
+   compile on Sean's machine. (Sean is non-technical; he does not handle
+   git or NT8 install steps himself.)
+4. Sean runs the strategy as-is (all three filters at default 0) to
    confirm no behaviour change. Then tunes one filter at a time.
 
 ### Tuning guidance offered to client
@@ -802,3 +804,117 @@ the other two at 0. Compare signal count + win rate against current
 baseline. If chop persists, layer `MinBarsBetweenEntries = 2` next.
 `MinHoldBars` is the heaviest — only raise it if individual trades are
 being stopped out right after entry by counter-signals.
+
+### Live-validation (added 2026-04-22 PM)
+After Sean ran the filters live, his feedback was:
+> *"definitely is helping the overall trade and trend directions. much better."*
+
+Anti-chop pack closed as delivered + accepted.
+
+---
+
+## 2026-04-22 — Center of Gravity added as new chain bottom
+
+### Context
+After validating the anti-chop pack live, Sean asked for an additional
+indicator. He shipped two candidates (`boom classic source code.txt`,
+`CENTER OF GRAVITY PINSCRIPT.txt`) and after a quick flip-flop settled
+on **Center of Gravity** as the better choice — *"this is best addition
+choice if we can make it happen"*. He paired the request with a concrete
+chain spec and a side-by-side TV screenshot showing his chart with COG
+vs without COG (right side: many fewer markers, holds through trend
+pushes).
+
+### Scope clarification
+Initial pitch (Claude): COG as an optional **parallel filter**, like
+Technical Ratings was supposed to be. **Sean wanted something different**
+— inspecting his stated chain (`Range Filter > Stoch RVI > SLSMA > LSMAC
+> ZLSMA > macZLSMA > Center of Gravity`, read bottom-up) showed COG
+inserted as the new chain BOTTOM, feeding macZLSMA. That is a structural
+chain change, not a parallel vote. Built per Sean's spec.
+
+### Settings (per Sean's chat)
+| Param | Value | Source |
+|---|---|---|
+| `Length` | 2 | Sean override (Pine default 9) |
+| `Smoothing` | NONE (SMA = alternative) | Sean override (Pine default NONE/RMA — RMA path not ported) |
+| `Smoothing Length` | 2 | Sean |
+| `Trigger Window / Offset / Sigma` | 3 / 0.85 / 6 | Pine defaults (Sean did not override) |
+| `Prev High/Low Length`, `LSMA Length`, `Fib Length` | 12 / 100 / 1000 | Sean — but visual-only, not exposed on strategy panel |
+
+### Chain insertion (the breaking change)
+Before: `Close → macZLSMA → ZLSMA → ... → Range Filter`
+After:  `Close → COG → macZLSMA → ZLSMA → ... → Range Filter`
+
+macZLSMA's source switched from `Close` to `s_cog_plot` (the smoothed-or-not
+COG output). All downstream stages automatically inherit the change because
+each one reads from its immediate upstream stage. **Signal count and timing
+will shift from the prior baseline** — that's the entire point per Sean's
+side-by-side; flagged to him before building.
+
+### Toggle for A/B comparison
+Added `UseCOGInChain` (group "09 Center of Gravity", default ON). When OFF,
+macZLSMA reverts to reading `Close` and the pre-COG signal baseline is
+restored — so Sean can A/B compare with vs without COG just by toggling
+this one switch on the strategy panel. Mirrors the comparison in his
+side-by-side screenshot.
+
+### Alignment vote
+Added `UseCOGFilter` (group "04 Alignment filters", default ON, Order 0).
+Direction = `raw_cog > alma_trigger ? +1 : -1`, mirroring Pine's
+`enter = crossover(COG1, trigger)` (note Pine compares the raw COG to the
+trigger, not the smoothed `COG`). Matches the pattern of every other
+chain stage's filter toggle.
+
+### Math implementation (all inlined in `ComputeChain` Stage 0)
+- `cog(src, len) = -Σ(src[i]*(i+1)) / Σ(src[i])`  — Pine cog formula.
+- Optional SMA smoothing over `COGSmoothingLength` (Sean's variant —
+  Pine's RMA path is intentionally NOT ported).
+- `alma(plot, window, offset, sigma)` — standard Arnaud Legoux MA, with
+  `m = offset*(window-1)`, `s = window/sigma`,
+  `weight[i] = exp(-(i-m)²/(2s²))`,
+  `result = Σ(weight[i]*plot[window-1-i]) / Σ(weight[i])`.
+- Direction vote: `raw_cog vs alma_trigger`.
+
+### Visual-only Pine settings deliberately omitted
+`Prev High/Low Length`, `LSMA Length`, `Fib Length` are NOT on the strategy
+panel — they affect Pine's chart visuals only, not signal logic. If Sean
+wants COG drawn on the NT8 chart for visual parity with TV, a standalone
+`TV_COG.cs` indicator file (matching the pattern of the existing
+`TV_MacZLSMA.cs` etc.) would be a follow-up build. Not strictly required
+for strategy operation; left as offered scope.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — Stage 0 added, macZLSMA
+  re-sourced (toggleable), CheckAlignment extended, 8 new params, 4 new
+  series fields, header + Description updated.
+- `SPEC_SUMMARY.md` — chain diagram updated, settings table extended,
+  COG addition note added.
+- `ASSUMPTIONS_LOG.md` — A16–A21 added (cog formula, ALMA formula,
+  smoothing variant, direction rule, omitted visual params, chain
+  insertion semantics).
+- `PROGRESS_LOG.md` — this entry; also corrected the prior anti-chop
+  rollout step which incorrectly described Sean as performing the
+  git/NT8 deploy steps himself.
+
+### Compile status
+Compiled clean on freelancer's dev machine on first attempt. Pending
+deployment to Sean's PC via AnyDesk, then live observation.
+
+### Rollout plan
+1. ~~Freelancer local F5~~ **DONE — green.**
+2. Commit + push to `origin/main`.
+3. Freelancer connects to Sean's PC via AnyDesk, pulls latest, drops
+   strategy file into NT8's `Custom\Strategies\`, F5 to confirm green
+   compile on the client install.
+4. Sean runs the strategy with defaults (`UseCOGInChain = ON`,
+   `UseCOGFilter = ON`). Compare signal behaviour against the prior
+   baseline. Toggle `UseCOGInChain = OFF` to A/B compare on the same
+   chart at any time.
+
+### Scope note for billing (carried forward)
+This is the second post-spec feature add (after the anti-chop pack).
+The original delivery contract = "port the 7-indicator chain, achieve
+TV signal parity"; COG is a structural extension to the chain that did
+not exist in any of the locked source materials (XTBUILDER, BUY/SELL
+articulation, original Pine sources). Genuine additional scope.
