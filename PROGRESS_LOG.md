@@ -438,6 +438,105 @@ appear, paste them.
 
 ---
 
+## 2026-04-22 — Monolithic strategy rewrite + clean compile on target
+
+### Context
+Between the "fourth compile succeeded on user's dev machine" milestone
+(2026-04-21) and today, the package was delivered to the client for
+install on their trading PC. The same code that compiled cleanly on the
+dev machine produced multiple waves of failures on the client's install.
+
+### Failures observed on client's install (in order)
+1. **CS1955 "Non-invocable member"** (first install attempt) — NT8's
+   factory-method auto-generator did not produce Strategy-partial-class
+   factory methods for the `TV_*` indicators. This meant calls like
+   `TV_MacZLSMA(Close, …)` in the strategy resolved to the type, not
+   a method.
+2. **Deleting `@Strategy.cs`** was suggested as a recovery step (since
+   it was stale from 2026-01-15) but cascaded into CS0103 "The name
+   'indicator' does not exist" across dozens of the client's vendor
+   files and NT8 built-ins — `@Strategy.cs` contained the `indicator`
+   field declaration those files depend on.
+3. **A `CacheIndicator<T>` refactor** was attempted as a bypass, based
+   on a mistaken assumption that `CacheIndicator<T>` is part of the
+   public NinjaScriptBase surface. It isn't — produced CS0103 "The
+   name 'CacheIndicator' does not exist in the current context".
+   Reverted.
+4. **Tools → Remove NinjaScript Assembly** was blocked by NT8 because
+   of pre-existing compile errors (chicken-and-egg).
+5. **Full NT8 reinstall** restored the framework `@*.cs` files and
+   produced a clean baseline on the client PC. Reinstalling our code
+   on top of the clean baseline reproduced the original CS1955
+   problem — confirming the auto-gen failure was environmental /
+   install-specific and not something our code could repair.
+
+### Final resolution — monolithic strategy
+Rewrote `TV_RenkoRangeStrategy.cs` as a fully self-contained strategy
+that inlines every Pine math primitive (linreg, stdev, ema, stoch, sma,
+Range Filter smoothrng/rngfilt/CondIni recursion) as private methods on
+the strategy class itself. The strategy no longer references any
+`TV_MacZLSMA` / `TV_ZLSMA` / `TV_LSMACrossover` / `TV_SLSMA` /
+`TV_StochRVI` / `TV_RangeFilter` / `TV_TechnicalRatingsApprox` as
+types or methods. Chain intermediate values are held in ~30 private
+`Series<double>` fields allocated in `State.DataLoaded`.
+
+Net effect: zero dependency on NT8's factory-method auto-generator, so
+the original class of failure is structurally impossible now. Compile
+behaviour is deterministic across NT8 installs.
+
+One follow-up fix after the first compile attempt of the monolithic
+build: CS0136 "variable shadowing" on local `prev` names — two inner
+`if` blocks declared `double prev` before the outer method scope also
+declared `double prev` for Range Filter recursion. C# disallows this
+even though the outer declaration textually follows the inner ones.
+Renamed inner variables to `zPrev` / `zCur` and `slPrev` / `slCur`.
+
+### Net result
+- User's own dev machine: compiles clean.
+- Client's production PC (after NT8 reinstall + monolithic strategy
+  install): compiles clean.
+
+### Files changed since the 2026-04-21 milestone
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — rewritten monolithic.
+- Supporting commits in git log:
+  - `03be351` — moved TV_* classes out of TVPort sub-namespace
+  - `ed20c64` — attempted (wrong) CacheIndicator<T> refactor
+  - `110076f` — reverted CacheIndicator<T> mistake
+  - `da255ee` — monolithic rewrite
+  - `df68647` — CS0136 variable-rename fix
+
+### Indicator files (TV_MacZLSMA.cs, TV_ZLSMA.cs, …)
+Left unchanged in the repo. They are standalone NT8 indicators, usable
+on a chart individually. They are NOT referenced by the monolithic
+strategy. On the client's install they can be present or absent — the
+strategy works either way. The client install currently has them
+removed (the pre-reinstall cleanup step did not re-install them).
+If the client wants them on a chart for visual validation, they can be
+added back via git pull + copy at any time; they compile independently
+of the strategy.
+
+### Technical Ratings status
+The `TV_TechnicalRatingsApprox` indicator file is also unchanged in the
+repo. The monolithic strategy does NOT wire it in — the `UseTechnicalRatings`
+and `UseTechRatingsFilter` toggles exist on the strategy UI but are
+currently reserved / no-ops in the monolithic build. Per the locked spec
+this is not a blocker (Technical Ratings was always off by default).
+
+### Outstanding items for client validation
+1. Apply `TV_RenkoRangeStrategy` to an MNQ Renko-6 1-second chart on
+   the client's PC.
+2. Enable during the 09:33–12:00 NY session window.
+3. Visually compare the Buy/Sell arrows drawn by the strategy against
+   the client's TradingView chart signals. See `VALIDATION_CHECKLIST.md`.
+4. Run NT8 Strategy Analyzer backtest over the last 5 trading days
+   within the session window, compare trade list + per-trade direction
+   against TradingView playback.
+5. Client to mark 3–5 historical trades with date + approximate NY
+   time so side-by-side signal-bar parity can be verified at specific
+   known-good points.
+
+---
+
 ## 2026-04-21 — Fourth compile pass: SUCCESS ✓
 
 User ran F5 a fourth time. The red error panel is gone. NinjaScript
