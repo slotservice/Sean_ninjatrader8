@@ -12,10 +12,16 @@
 // visual comparison. The strategy simply no longer references them as types
 // or methods.
 //
-// Chain (defaults from XTBUILDER2.8.4 + Sean 2026-04-22 extension):
+// Default chain (from XTBUILDER2.8.4 + Sean 2026-04-22 extensions):
 //     Close → Center of Gravity → macZLSMA → ZLSMA → LSMA Crossover.Trigger
 //           → SLSMA → Stoch RVI.K → Range Filter
-// Center of Gravity is the new chain bottom (toggleable via UseCOGInChain).
+//
+// As of 2026-04-22 PM, every chain indicator has a per-stage "Source" dropdown
+// on the strategy panel — Sean can re-wire the chain at runtime to any TV-style
+// configuration (e.g. SLSMA can read from COG: LSMA directly, skipping macZLSMA).
+// Compute order remains fixed (COG → macZ → Z → LSMAC → SLSMA → StochRVI → RF).
+// Picking a source from a stage that runs AFTER the current stage produces
+// one-bar-lagged data — same behaviour as TV does in that edge case.
 //
 // Install: Documents\NinjaTrader 8\bin\Custom\Strategies\TV_RenkoRangeStrategy.cs
 // =============================================================================
@@ -35,15 +41,34 @@ using NinjaTrader.NinjaScript.DrawingTools;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
+    // Available outputs that any chain indicator can use as its source.
+    // Mirrors TradingView's "Source" dropdown — pick any other indicator's output.
+    public enum TVChainSource
+    {
+        Close          = 0,
+        COG_Plot       = 1,
+        COG_LSMA       = 2,
+        COG_Trigger    = 3,
+        MacZ_Plot      = 4,
+        MacZ_Trigger   = 5,
+        ZLSMA_Plot     = 6,
+        LSMAC_LSMA     = 7,
+        LSMAC_Trigger  = 8,
+        SLSMA_Plot     = 9,
+        StochRVI_K     = 10,
+        StochRVI_D     = 11
+    }
+
     public class TV_RenkoRangeStrategy : Strategy
     {
         // ------------------------------------------------------------------
         // Intermediate series — allocated in State.DataLoaded.
         // ------------------------------------------------------------------
-        // Stage 0: Center of Gravity (added 2026-04-22 — new chain bottom)
+        // Stage 0: Center of Gravity (added 2026-04-22)
         private Series<double> s_cog_raw;       // raw cog(src, length)
-        private Series<double> s_cog_plot;      // smoothed-or-not — feeds macZLSMA when UseCOGInChain
-        private Series<double> s_cog_trigger;   // alma trigger line
+        private Series<double> s_cog_plot;      // smoothed-or-not (Pine "COG")
+        private Series<double> s_cog_trigger;   // ALMA trigger line (Pine "Trigger")
+        private Series<double> s_cog_lsma;      // linreg of cog plot over LsmaLength (Pine "LSMA") — Sean's preferred chain source
         private Series<double> s_cog_dir;       // +1 if raw > trigger, -1 if raw < trigger, 0 otherwise
 
         // Stage 1: macZLSMA
@@ -155,14 +180,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseStochRVIFilter    = true;
                 UseTechRatingsFilter = false;
 
-                // Center of Gravity (Sean spec 2026-04-22)
-                UseCOGInChain       = true;
-                COGLength           = 2;
-                COGSmoothingEnabled = false;   // NONE by default; SMA is the alternative
-                COGSmoothingLength  = 2;
-                COGTriggerWindow    = 3;       // Pine ALMA defaults; Sean did not override
-                COGTriggerOffset    = 0.85;
-                COGTriggerSigma     = 6.0;
+                // Center of Gravity (Sean corrected spec 2026-04-22 PM)
+                COGLength            = 8;
+                COGSmoothingEnabled  = false;   // NONE by default; SMA is the alternative
+                COGSmoothingLength   = 3;
+                COGLsmaLength        = 200;     // drives the COG: LSMA line (Sean's preferred source)
+                COGPrevHiLoLength    = 20;      // visual-only on standalone, exposed for transparency
+                COGFibLength         = 1000;    // visual-only on standalone, exposed for transparency
+                COGTriggerWindow     = 3;       // Pine ALMA defaults; Sean did not override
+                COGTriggerOffset     = 0.85;
+                COGTriggerSigma      = 6.0;
+
+                // Per-stage Source dropdowns (TV-style flex). Defaults reproduce the
+                // canonical chain: COG: LSMA → macZLSMA → ZLSMA → LSMAC → SLSMA → StochRVI → RF.
+                MacZSource     = TVChainSource.COG_LSMA;
+                ZLSMASource    = TVChainSource.MacZ_Plot;
+                LSMACSource    = TVChainSource.ZLSMA_Plot;
+                SLSMASource    = TVChainSource.LSMAC_Trigger;
+                StochRVISource = TVChainSource.SLSMA_Plot;
+                RangeFilterSource = TVChainSource.StochRVI_K;
 
                 MacZLength        = 2;
                 MacZOffset        = 0;
@@ -199,6 +235,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_cog_raw     = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_cog_plot    = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_cog_trigger = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_cog_lsma    = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_cog_dir     = new Series<double>(this, MaximumBarsLookBack.Infinite);
 
                 s_mz_lsma     = new Series<double>(this, MaximumBarsLookBack.Infinite);
@@ -420,9 +457,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             // ---------------- Stage 0: Center of Gravity (input = Close) ----------------
             // raw_cog = -Σ(src[i] * (i+1)) / Σ(src[i]) over length bars (Pine cog() formula).
-            // plot = sma(raw_cog, SmoothingLength) when COGSmoothingEnabled, else raw_cog.
-            // trigger = ALMA(plot, window, offset, sigma)  — Arnaud Legoux MA, standard formula.
-            // direction = +1 if raw > trigger else -1  (mirrors Pine's enter = crossover(COG1, trigger)).
+            // plot     = sma(raw_cog, SmoothingLength) if COGSmoothingEnabled, else raw_cog.
+            // lsma     = linreg(plot, COGLsmaLength, 0)      — Sean's preferred chain source.
+            // trigger  = ALMA(plot, window, offset, sigma).
+            // direction = +1 if raw > trigger else -1.
             if (CurrentBar >= COGLength - 1)
             {
                 double sumNum = 0.0, sumDen = 0.0;
@@ -447,6 +485,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_cog_plot[0] = s_cog_raw[0];
             }
 
+            // COG: LSMA — linreg of plot over COGLsmaLength. Pine: lsma = linreg(COG, length3, 0).
+            if (CurrentBar >= COGLsmaLength - 1)
+                s_cog_lsma[0] = LinRegOnSeries(s_cog_plot, COGLsmaLength, 0, 0);
+
             // ALMA trigger on the plot value; direction vote uses raw vs trigger.
             if (CurrentBar >= COGTriggerWindow - 1)
             {
@@ -467,10 +509,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_cog_dir[0] = cogR > cogT ? 1 : cogR < cogT ? -1 : 0;
             }
 
-            // ---------------- Stage 1: macZLSMA (input = COG plot OR Close) ----------------
+            // ---------------- Stage 1: macZLSMA (input = MacZSource) ----------------
             // lsma = linreg(src, L, O); lsma2 = linreg(lsma, L, O); zlsma2 = 2*lsma - lsma2
             // trigger = sma(zlsma2, L2); direction = +1 if zlsma2 > trigger else -1
-            ISeries<double> macZSrc = UseCOGInChain ? (ISeries<double>)s_cog_plot : (ISeries<double>)Close;
+            ISeries<double> macZSrc = ResolveSource(MacZSource);
             if (CurrentBar >= MacZLength - 1)
                 s_mz_lsma[0] = LinReg(macZSrc, MacZLength, MacZOffset, 0);
             if (CurrentBar >= (2 * MacZLength) - 2)
@@ -491,12 +533,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_mz_dir[0] = plot > trig ? 1 : plot < trig ? -1 : 0;
             }
 
-            // ---------------- Stage 2: ZLSMA (input = macZLSMA plot) ----------------
-            if (CurrentBar >= (2 * MacZLength) - 2 + (ZLSMALength - 1))
-            {
-                s_z_lsma[0] = LinRegOnSeries(s_mz_plot, ZLSMALength, ZLSMAOffset, 0);
-            }
-            if (CurrentBar >= (2 * MacZLength) - 2 + (2 * ZLSMALength) - 2)
+            // ---------------- Stage 2: ZLSMA (input = ZLSMASource) ----------------
+            ISeries<double> zSrc = ResolveSource(ZLSMASource);
+            if (CurrentBar >= ZLSMALength - 1)
+                s_z_lsma[0] = LinReg(zSrc, ZLSMALength, ZLSMAOffset, 0);
+            if (CurrentBar >= (2 * ZLSMALength) - 2)
             {
                 double lsma2 = LinRegOnSeries(s_z_lsma, ZLSMALength, ZLSMAOffset, 0);
                 s_z_plot[0]  = 2.0 * s_z_lsma[0] - lsma2;
@@ -509,12 +550,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            // ---------------- Stage 3: LSMA Crossover (input = ZLSMA plot) ----------------
-            if (CurrentBar >= (2 * MacZLength) - 2 + (2 * ZLSMALength) - 2 + (LSMACLength - 1))
-            {
-                s_lc_lsma[0] = LinRegOnSeries(s_z_plot, LSMACLength, LSMACOffset, 0);
-            }
-            if (CurrentBar >= (2 * MacZLength) - 2 + (2 * ZLSMALength) - 2 + (LSMACLength - 1) + (LSMACTriggerLength - 1))
+            // ---------------- Stage 3: LSMA Crossover (input = LSMACSource) ----------------
+            ISeries<double> lcSrc = ResolveSource(LSMACSource);
+            if (CurrentBar >= LSMACLength - 1)
+                s_lc_lsma[0] = LinReg(lcSrc, LSMACLength, LSMACOffset, 0);
+            if (CurrentBar >= LSMACLength - 1 + (LSMACTriggerLength - 1))
             {
                 double trig = 0.0;
                 for (int i = 0; i < LSMACTriggerLength; i++) trig += s_lc_lsma[i];
@@ -525,14 +565,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_lc_dir[0] = cur > trig ? 1 : cur < trig ? -1 : 0;
             }
 
-            // ---------------- Stage 4: SLSMA (input = LSMA Crossover Trigger) ----------------
-            // SLSMA is the reconstructed double-linreg smoother (no zero-lag correction).
-            int slsmaStart = (2 * MacZLength) - 2 + (2 * ZLSMALength) - 2 + (LSMACLength - 1) + (LSMACTriggerLength - 1);
-            if (CurrentBar >= slsmaStart + (SLSMALength - 1))
-            {
-                s_sl_lsma[0] = LinRegOnSeries(s_lc_trigger, SLSMALength, SLSMAOffset, 0);
-            }
-            if (CurrentBar >= slsmaStart + (2 * SLSMALength) - 2)
+            // ---------------- Stage 4: SLSMA (input = SLSMASource) ----------------
+            // Reconstructed double-linreg smoother (no zero-lag correction).
+            ISeries<double> slSrc = ResolveSource(SLSMASource);
+            if (CurrentBar >= SLSMALength - 1)
+                s_sl_lsma[0] = LinReg(slSrc, SLSMALength, SLSMAOffset, 0);
+            if (CurrentBar >= (2 * SLSMALength) - 2)
             {
                 s_sl_plot[0] = LinRegOnSeries(s_sl_lsma, SLSMALength, SLSMAOffset, 0);
 
@@ -544,25 +582,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            // ---------------- Stage 5: Stochastic RVI (input = SLSMA plot) ----------------
+            // ---------------- Stage 5: Stochastic RVI (input = StochRVISource) ----------------
             // stddev(src, RviLength); upperRaw = change<=0?0:stddev; ema len=14; rvi = up/(up+lo)*100
             // stoch(rvi, ..., StochLength); k = sma(stochRaw, SmoothK); d = sma(k, SmoothD)
             // Pine stdev = population.
+            ISeries<double> srSrc = ResolveSource(StochRVISource);
             if (CurrentBar >= RVILength - 1)
             {
                 double mean = 0.0;
-                for (int i = 0; i < RVILength; i++) mean += s_sl_plot[i];
+                for (int i = 0; i < RVILength; i++) mean += srSrc[i];
                 mean /= RVILength;
                 double ssq = 0.0;
                 for (int i = 0; i < RVILength; i++)
                 {
-                    double diff = s_sl_plot[i] - mean;
+                    double diff = srSrc[i] - mean;
                     ssq += diff * diff;
                 }
                 s_sr_stddev[0] = Math.Sqrt(ssq / RVILength);
             }
 
-            double change = (CurrentBar > 0) ? (s_sl_plot[0] - s_sl_plot[1]) : 0.0;
+            double change = (CurrentBar > 0) ? (srSrc[0] - srSrc[1]) : 0.0;
             s_sr_upperRaw[0] = (change <= 0) ? 0.0             : s_sr_stddev[0];
             s_sr_lowerRaw[0] = (change  > 0) ? 0.0             : s_sr_stddev[0];
 
@@ -607,8 +646,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             s_sr_dir[0] = s_sr_k[0] > s_sr_d[0] ? 1 : s_sr_k[0] < s_sr_d[0] ? -1 : 0;
 
-            // ---------------- Stage 6: Range Filter (input = Stoch RVI K) ----------------
-            double x = s_sr_k[0];
+            // ---------------- Stage 6: Range Filter (input = RangeFilterSource) ----------------
+            ISeries<double> rfSrc = ResolveSource(RangeFilterSource);
+            double x = rfSrc[0];
             if (CurrentBar == 0)
             {
                 s_rf_absChange[0] = 0;
@@ -624,7 +664,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            double xPrev = s_sr_k[1];
+            double xPrev = rfSrc[1];
             s_rf_absChange[0] = Math.Abs(x - xPrev);
 
             int wper = SamplingPeriod * 2 - 1;
@@ -708,6 +748,31 @@ namespace NinjaTrader.NinjaScript.Strategies
             return intercept + slope * (length - 1 - offset);
         }
 
+        // Maps a TVChainSource enum value to the live series. Used by every chain
+        // stage to dispatch on its user-selected source. If a stage picks a source
+        // that hasn't been computed yet on this bar (e.g. SLSMA reading from
+        // Range Filter — reverse direction in the natural compute order), the read
+        // returns the default 0.0 or last bar's value — same edge case TV exhibits.
+        private ISeries<double> ResolveSource(TVChainSource src)
+        {
+            switch (src)
+            {
+                case TVChainSource.Close:         return Close;
+                case TVChainSource.COG_Plot:      return s_cog_plot;
+                case TVChainSource.COG_LSMA:      return s_cog_lsma;
+                case TVChainSource.COG_Trigger:   return s_cog_trigger;
+                case TVChainSource.MacZ_Plot:     return s_mz_plot;
+                case TVChainSource.MacZ_Trigger:  return s_mz_trigger;
+                case TVChainSource.ZLSMA_Plot:    return s_z_plot;
+                case TVChainSource.LSMAC_LSMA:    return s_lc_lsma;
+                case TVChainSource.LSMAC_Trigger: return s_lc_trigger;
+                case TVChainSource.SLSMA_Plot:    return s_sl_plot;
+                case TVChainSource.StochRVI_K:    return s_sr_k;
+                case TVChainSource.StochRVI_D:    return s_sr_d;
+                default:                          return Close;
+            }
+        }
+
         private bool CheckAlignment(int signalDir)
         {
             if (signalDir == 0) return false;
@@ -759,53 +824,67 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Display(Name = "Use Tech Ratings filter",   Order = 6, GroupName = "04 Alignment filters", Description = "Reserved — Technical Ratings approximation not included in monolithic build.")] public bool UseTechRatingsFilter { get; set; }
         [NinjaScriptProperty][Display(Name = "Use Technical Ratings",     Order = 7, GroupName = "04 Alignment filters", Description = "Reserved — not wired in monolithic build.")] public bool UseTechnicalRatings { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Use COG in chain", Order = 1, GroupName = "09 Center of Gravity", Description = "When on, macZLSMA reads from COG instead of Close — COG becomes the new chain bottom. When off, the chain runs from Close as before (signal-count parity to pre-COG baseline).")]
-        public bool UseCOGInChain { get; set; }
-
         [NinjaScriptProperty][Range(1, int.MaxValue)]
-        [Display(Name = "Length", Order = 2, GroupName = "09 Center of Gravity")]
+        [Display(Name = "Length", Order = 1, GroupName = "09 Center of Gravity")]
         public int COGLength { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Smoothing (SMA)", Order = 3, GroupName = "09 Center of Gravity", Description = "Off = no smoothing (Pine 'NONE'). On = SMA over Smoothing Length. Sean's spec: NONE default, SMA alternative.")]
+        [Display(Name = "Smoothing (SMA)", Order = 2, GroupName = "09 Center of Gravity", Description = "Off = no smoothing (Pine 'NONE'). On = SMA over Smoothing Length. Sean's spec: NONE default, SMA alternative.")]
         public bool COGSmoothingEnabled { get; set; }
 
         [NinjaScriptProperty][Range(1, int.MaxValue)]
-        [Display(Name = "Smoothing Length", Order = 4, GroupName = "09 Center of Gravity", Description = "Used only when Smoothing (SMA) is on.")]
+        [Display(Name = "Smoothing Length", Order = 3, GroupName = "09 Center of Gravity", Description = "Used only when Smoothing (SMA) is on.")]
         public int COGSmoothingLength { get; set; }
 
         [NinjaScriptProperty][Range(1, int.MaxValue)]
-        [Display(Name = "Trigger Window", Order = 5, GroupName = "09 Center of Gravity", Description = "ALMA window for the trigger line.")]
+        [Display(Name = "LSMA Length", Order = 4, GroupName = "09 Center of Gravity", Description = "Drives the COG: LSMA output line — Sean's preferred source for downstream chain stages.")]
+        public int COGLsmaLength { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Previous High/Low Length", Order = 5, GroupName = "09 Center of Gravity", Description = "Visual-only on the standalone COG indicator. Has no effect on signal logic in the strategy.")]
+        public int COGPrevHiLoLength { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Fib Length", Order = 6, GroupName = "09 Center of Gravity", Description = "Visual-only on the standalone COG indicator. Has no effect on signal logic in the strategy.")]
+        public int COGFibLength { get; set; }
+
+        [NinjaScriptProperty][Range(1, int.MaxValue)]
+        [Display(Name = "Trigger Window", Order = 7, GroupName = "09 Center of Gravity", Description = "ALMA window for the trigger line.")]
         public int COGTriggerWindow { get; set; }
 
         [NinjaScriptProperty][Range(0.0, 1.0)]
-        [Display(Name = "Trigger Offset", Order = 6, GroupName = "09 Center of Gravity", Description = "ALMA offset (0..1). Pine default 0.85.")]
+        [Display(Name = "Trigger Offset", Order = 8, GroupName = "09 Center of Gravity", Description = "ALMA offset (0..1). Pine default 0.85.")]
         public double COGTriggerOffset { get; set; }
 
         [NinjaScriptProperty][Range(0.01, double.MaxValue)]
-        [Display(Name = "Trigger Sigma", Order = 7, GroupName = "09 Center of Gravity", Description = "ALMA sigma (controls weight curve sharpness). Pine default 6.")]
+        [Display(Name = "Trigger Sigma", Order = 9, GroupName = "09 Center of Gravity", Description = "ALMA sigma (controls weight curve sharpness). Pine default 6.")]
         public double COGTriggerSigma { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source",         Order = 0, GroupName = "10 macZLSMA",        Description = "Pick the input series for macZLSMA. Default: COG: LSMA.")] public TVChainSource MacZSource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Length",         Order = 1, GroupName = "10 macZLSMA")] public int MacZLength { get; set; }
         [NinjaScriptProperty][Range(0, int.MaxValue)][Display(Name = "Offset",         Order = 2, GroupName = "10 macZLSMA")] public int MacZOffset { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Trigger Length", Order = 3, GroupName = "10 macZLSMA")] public int MacZTriggerLength { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source", Order = 0, GroupName = "11 ZLSMA", Description = "Pick the input series for ZLSMA. Default: macZLSMA: Plot.")] public TVChainSource ZLSMASource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Length", Order = 1, GroupName = "11 ZLSMA")] public int ZLSMALength { get; set; }
         [NinjaScriptProperty][Range(0, int.MaxValue)][Display(Name = "Offset", Order = 2, GroupName = "11 ZLSMA")] public int ZLSMAOffset { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source",          Order = 0, GroupName = "12 LSMA Crossover", Description = "Pick the input series for LSMA Crossover. Default: ZLSMA: Plot.")] public TVChainSource LSMACSource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Length",          Order = 1, GroupName = "12 LSMA Crossover")] public int LSMACLength { get; set; }
         [NinjaScriptProperty][Range(0, int.MaxValue)][Display(Name = "Offset",          Order = 2, GroupName = "12 LSMA Crossover")] public int LSMACOffset { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Trigger Length",  Order = 3, GroupName = "12 LSMA Crossover")] public int LSMACTriggerLength { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source", Order = 0, GroupName = "13 SLSMA (reconstructed)", Description = "Pick the input series for SLSMA. Default: LSMA Crossover: Trigger.")] public TVChainSource SLSMASource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Length", Order = 1, GroupName = "13 SLSMA (reconstructed)")] public int SLSMALength { get; set; }
         [NinjaScriptProperty][Range(0, int.MaxValue)][Display(Name = "Offset", Order = 2, GroupName = "13 SLSMA (reconstructed)")] public int SLSMAOffset { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source",            Order = 0, GroupName = "14 Stochastic RVI", Description = "Pick the input series for Stochastic RVI. Default: SLSMA: Plot.")] public TVChainSource StochRVISource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "RVI Length",        Order = 1, GroupName = "14 Stochastic RVI")] public int RVILength { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "K Smoothing",       Order = 2, GroupName = "14 Stochastic RVI")] public int StochK { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "D Smoothing",       Order = 3, GroupName = "14 Stochastic RVI")] public int StochD { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)][Display(Name = "Stochastic Length", Order = 4, GroupName = "14 Stochastic RVI")] public int StochLength { get; set; }
 
+        [NinjaScriptProperty][Display(Name = "Source",             Order = 0, GroupName = "15 Range Filter", Description = "Pick the input series for the Range Filter signal generator. Default: Stoch RVI: K.")] public TVChainSource RangeFilterSource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)]      [Display(Name = "Sampling Period",  Order = 1, GroupName = "15 Range Filter")] public int    SamplingPeriod  { get; set; }
         [NinjaScriptProperty][Range(0.01, double.MaxValue)][Display(Name = "Range Multiplier", Order = 2, GroupName = "15 Range Filter")] public double RangeMultiplier { get; set; }
 

@@ -918,3 +918,100 @@ The original delivery contract = "port the 7-indicator chain, achieve
 TV signal parity"; COG is a structural extension to the chain that did
 not exist in any of the locked source materials (XTBUILDER, BUY/SELL
 articulation, original Pine sources). Genuine additional scope.
+
+---
+
+## 2026-04-22 (PM) — Per-stage Source dropdowns + COG settings corrected
+
+### Context
+After deploying the COG build to Sean's PC, he flagged two issues during
+his first session:
+
+1. **Hardcoded chain.** TV's chain is user-configurable (each indicator
+   has a Source dropdown listing every other indicator's outputs). Our
+   build wired the chain in code — no way to construct his "SLSMA + COG
+   only" variation from the strategy panel. He paired this with a
+   screenshot of TV's SLSMA Inputs panel showing Source = `COG: LSMA`,
+   confirming he actively re-wires the chain to test variations.
+2. **Wrong COG defaults.** What he initially typed in chat
+   (Length=2 / Smoothing Length=2 / LSMA=100) didn't match his actual
+   TV chart screenshot (Length=8 / Smoothing Length=3 / LSMA=200 / Prev
+   H/L=20). He apologised and corrected: *"sorry that was totally my
+   fault there, i sent the wronge settings"*.
+
+### Decisions made (Sean answered both blocking questions)
+- **Full TV-style flex, not presets.** *"i need maximum flexability,
+  the source options are the easiest way to do this. technically
+  presettings are suggestions and are subject to change"*.
+- **`COG: LSMA` is the preferred chain source.** *"yes the COG LSMA
+  source is the prefered source to pull the data from to build that
+  particular indicator"*. Default for macZLSMA's source switched from
+  `COG: Plot` to `COG: LSMA`.
+- **LSMA Length = 200** (one-line ambiguity in Sean's message —
+  *"LSMA LENGTH= 120 ... SLSMA=200, not 120"* — read as "scratch the
+  120, COG LSMA Length is 200". Matches his TV chart screenshot. Built
+  with 200; pending one-line confirmation from him.)
+
+### Implementation
+- New `enum TVChainSource` (12 named outputs: `Close`, `COG: Plot/LSMA/
+  Trigger`, `macZLSMA: Plot/Trigger`, `ZLSMA: Plot`, `LSMA Crossover:
+  LSMA/Trigger`, `SLSMA: Plot`, `Stoch RVI: K/D`).
+- New `ResolveSource(TVChainSource)` helper → `ISeries<double>`.
+- Each chain stage (`macZLSMA`, `ZLSMA`, `LSMA Crossover`, `SLSMA`,
+  `Stoch RVI`, `Range Filter`) gets a new `Source` dropdown param at
+  Order 0 of its existing param group. Dispatched through `ResolveSource`
+  at the top of each stage's compute block in `ComputeChain`.
+- Cumulative warm-up gates simplified to per-stage gates only — they
+  were always relying on `BarsRequiredToTrade = 1000` to absorb early
+  garbage anyway, and the cumulative form was wrong once sources became
+  user-configurable.
+- New `s_cog_lsma` series computed in Stage 0 via `linreg(s_cog_plot,
+  COGLsmaLength, 0, 0)` — Pine `lsma = linreg(COG, length3, 0)`. Made
+  selectable as `COG: LSMA` in the Source dropdown.
+- New COG params: `LSMA Length`, `Previous High/Low Length`, `Fib Length`
+  added to group "09 Center of Gravity" — LSMA Length is signal-affecting
+  (drives `s_cog_lsma`), the other two are visual-only and labelled as
+  such on the panel.
+- Removed `UseCOGInChain` param. Subsumed by macZLSMA's Source dropdown
+  (set to `Close` to bypass COG, set to `COG: LSMA` to include it).
+- COG defaults updated to Sean's corrected spec: Length=8, Smoothing
+  Length=3, LSMA Length=200, Prev H/L=20, Fib Length=1000.
+
+### Compute order vs source flexibility (the one tradeoff)
+Compute order is static: COG → macZ → Z → LSMAC → SLSMA → StochRVI → RF.
+If a stage picks a source from a stage that runs LATER in compute order
+(e.g. SLSMA picks `Stoch RVI: K`), the read returns 0.0 or the previous
+bar's value, not the current bar's. This matches TV's behaviour in the
+same edge case. Natural-order chains have zero lag. Documented in
+`ASSUMPTIONS_LOG §A24`.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — enum, ResolveSource helper,
+  6 new Source params, 3 new COG params, ComputeChain rewritten, COG: LSMA
+  computed, UseCOGInChain removed, defaults updated.
+- `SPEC_SUMMARY.md` — chain diagram annotated, settings table updated,
+  Source flex section added.
+- `ASSUMPTIONS_LOG.md` — A20/A21 superseded with current-state notes;
+  A22 (COG: LSMA), A23 (Source dropdowns), A24 (compute order tradeoff),
+  A25 (settings correction with 200-vs-120 ambiguity flag) added.
+- `PROGRESS_LOG.md` — this entry.
+
+### Compile status
+Compiled clean on freelancer's dev machine on first attempt.
+
+### Rollout plan
+1. ~~Freelancer local F5~~ **DONE — green.**
+2. Commit + push.
+3. Freelancer connects to Sean's PC via AnyDesk, pulls latest, drops
+   strategy file, F5 to confirm green compile on the client install.
+4. Sean runs with defaults (canonical chain reproduced via dropdowns),
+   then experiments with rewiring sources for his test variations.
+5. Quick confirmation question to Sean: COG LSMA Length 200 vs 120
+   (we built with 200 — see ASSUMPTIONS §A25).
+
+### Scope note (carried forward)
+Third post-spec feature add (anti-chop pack → COG → Source dropdowns).
+None of these were in the original locked spec. Per-indicator source
+flexibility is meaningful net-new scope — was specifically pitched as
+billable add-on before building, Sean accepted with the
+*"yes i need the sources to be interchangeable"* response.

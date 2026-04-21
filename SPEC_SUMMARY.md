@@ -15,25 +15,31 @@ must agree with the signal direction).
 ## 2. Default source chain
 
 ```
-Close → Center of Gravity → macZLSMA → ZLSMA → LSMA Crossover.Trigger → SLSMA → Stoch RVI.K → Range Filter
-                                                                                                (+ optional Technical Ratings)
+Close → Center of Gravity → (COG: LSMA) → macZLSMA → ZLSMA → LSMA Crossover.Trigger → SLSMA → Stoch RVI.K → Range Filter
+                                                                                                              (+ optional Technical Ratings)
 ```
 
 Technical Ratings is last, unchecked by default, and does not participate in
 the chain — it sits alongside as an optional confirmation vote.
 
-**Note (2026-04-22):** Center of Gravity was added at Sean's request as the
-new chain bottom (replacing Close as macZLSMA's source). It is toggleable
-via the `Use COG in chain` strategy parameter — when off, macZLSMA reads
-Close as in the original spec. This makes the COG-vs-no-COG comparison a
-one-click A/B test on the strategy panel.
+**Note (2026-04-22 PM):** As of this date, every chain indicator has a
+**Source** dropdown on the strategy panel. Defaults above reproduce the
+canonical chain, but Sean can re-wire any stage's input to any other
+indicator's output at runtime (TV-style flex). Available source options:
+`Close`, `COG: Plot / LSMA / Trigger`, `macZLSMA: Plot / Trigger`,
+`ZLSMA: Plot`, `LSMA Crossover: LSMA / Trigger`, `SLSMA: Plot`,
+`Stoch RVI: K / D`. The prior `UseCOGInChain` toggle was removed —
+macZLSMA's Source dropdown subsumes it (pick `Close` to bypass COG, pick
+`COG: LSMA` to include it). Default for macZLSMA's source is `COG: LSMA`
+per Sean's stated preference ("the COG LSMA source is the preferred source
+to pull the data from").
 
 ## 3. Default settings (locked by client)
 
 | Indicator | Settings |
 | --- | --- |
-| Center of Gravity *(added 2026-04-22)* | length 2, smoothing NONE (SMA alt, length 2), trigger ALMA window 3 / offset 0.85 / sigma 6, source Close |
-| macZLSMA | length 2, offset 0, trigger 3, source **COG plot** (was Close — toggleable via `Use COG in chain`) |
+| Center of Gravity *(added 2026-04-22, settings corrected PM)* | length 8, smoothing NONE (SMA alt, length 3), LSMA length 200, prev hi/lo length 20, fib length 1000, trigger ALMA window 3 / offset 0.85 / sigma 6, source Close |
+| macZLSMA | length 2, offset 0, trigger 3, source **COG: LSMA** (default — user-selectable via Source dropdown) |
 | ZLSMA | length 2, offset 0, source macZLSMA |
 | LSMA Crossover | length 2, offset 0, trigger 4, source ZLSMA |
 | SLSMA | length 2, offset 0, source LSMAC.Trigger (reconstructed indicator) |
