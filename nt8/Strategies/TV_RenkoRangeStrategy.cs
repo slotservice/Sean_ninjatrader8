@@ -32,10 +32,10 @@ using NinjaTrader.Data;
 using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
-using NinjaTrader.NinjaScript.Indicators.TVPort;
+using NinjaTrader.NinjaScript.Indicators;
 #endregion
 
-namespace NinjaTrader.NinjaScript.Strategies.TVPort
+namespace NinjaTrader.NinjaScript.Strategies
 {
     public class TV_RenkoRangeStrategy : Strategy
     {

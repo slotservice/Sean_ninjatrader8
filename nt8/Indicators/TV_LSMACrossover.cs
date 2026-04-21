@@ -33,7 +33,7 @@ using NinjaTrader.Gui;
 using NinjaTrader.NinjaScript;
 #endregion
 
-namespace NinjaTrader.NinjaScript.Indicators.TVPort
+namespace NinjaTrader.NinjaScript.Indicators
 {
     public class TV_LSMACrossover : Indicator
     {

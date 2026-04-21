@@ -464,3 +464,69 @@ Next actions (user-side):
 3. Run NT8 Strategy Analyzer on the last 5 trading days, 09:33–12:00 NY,
    and compare trade list + net PnL direction to TV playback per
    `VALIDATION_CHECKLIST.md`.
+
+---
+
+## 2026-04-21 — Fifth compile pass (client's machine only)
+
+### Compile result on client's machine — 7 × CS1955 errors
+Client installed the zip, pressed F5, got:
+
+> TV_RenkoRangeStrategy.cs — Non-invocable member 'TV_MacZLSMA' cannot be used like a method  (CS1955)
+> (and 6 more identical errors for the other TV_* indicators)
+
+Note: the SAME code compiled cleanly on the freelancer's machine during
+pass 4. Only the client's machine failed. Artefacts shown in screenshots:
+- Client's `Documents\NinjaTrader 8\bin\Custom\Strategies\@Strategy.cs`
+  dated **2026-01-15** (stale, only 1 KB).
+- Client's `Documents\NinjaTrader 8\bin\Custom\Indicators\@ZLEMA.cs`
+  dated **2026-01-15**.
+
+### Root cause (diagnosed)
+NT8 normally auto-generates `@Strategy.cs` (the Strategy partial class's
+factory methods for user indicators) during compile. On the client's
+machine, NT8 was NOT regenerating this file even though the 7 TV_*
+indicators themselves compiled and were visible in the NinjaScript
+Explorer.
+
+Most likely trigger: I had placed the 7 indicators and the strategy in
+sub-namespaces `NinjaTrader.NinjaScript.Indicators.TVPort` and
+`NinjaTrader.NinjaScript.Strategies.TVPort`. Some NT8 builds do not
+auto-generate factory-method partial-class extensions for indicators in
+sub-namespaces — the generator walks the default namespace only. This
+is not documented but is a well-known NT8 quirk.
+
+Freelancer's machine happened to handle it (likely due to a fresh
+`@Strategy.cs`); client's machine (which had a pre-existing stale
+`@Strategy.cs` from another project) did not regenerate it.
+
+### Fix
+Moved all 8 code files to the canonical NT8 namespaces:
+- 7 indicators: `NinjaTrader.NinjaScript.Indicators.TVPort` →
+  `NinjaTrader.NinjaScript.Indicators`.
+- Strategy: `NinjaTrader.NinjaScript.Strategies.TVPort` →
+  `NinjaTrader.NinjaScript.Strategies`.
+- Updated the strategy's `using` from `…Indicators.TVPort` to
+  `…Indicators`.
+
+No other code changes required. The `TV_*` name prefix is already
+distinct enough to avoid collisions with NT8 built-ins.
+
+`TV_SharedEnums.cs` (the AddOn) left in `…AddOns.TVPort` — it is not
+referenced by any indicator or strategy after the earlier cleanup passes,
+and AddOns do not need to be in the canonical namespace for NT8
+auto-gen purposes.
+
+### Lesson for future NT8 work (final corrected version)
+**Always put public Indicator and Strategy classes directly in
+`NinjaTrader.NinjaScript.Indicators` and `NinjaTrader.NinjaScript.Strategies`
+— not in sub-namespaces.** NT8's factory-method auto-generator does not
+reliably handle sub-namespaces on all NT8 builds.
+
+### Action for user (freelancer) / client
+- Freelancer: recompile on their machine to confirm the namespace change
+  still works there.
+- Client: replace the 7 `TV_*.cs` indicator files + the
+  `TV_RenkoRangeStrategy.cs` strategy file with the newly-pushed versions,
+  then F5. If `@Strategy.cs` still appears stale after a compile cycle,
+  deleting it manually and recompiling forces NT8 to regenerate it.
