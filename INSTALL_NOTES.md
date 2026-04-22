@@ -2,20 +2,20 @@
 
 ## 1. File placement
 
-Copy the nine files below into the listed folders under
-`Documents\NinjaTrader 8\bin\Custom\`:
+**Only one file is strictly required for the strategy to run** (the strategy
+is monolithic — all indicator math is inlined inside it):
 
 | Source (this repo)                                   | Destination in NT8                                   |
 | ---------------------------------------------------- | ---------------------------------------------------- |
-| `nt8/AddOns/TV_SharedEnums.cs`                       | `AddOns\TV_SharedEnums.cs`                           |
-| `nt8/Indicators/TV_MacZLSMA.cs`                      | `Indicators\TV_MacZLSMA.cs`                          |
-| `nt8/Indicators/TV_ZLSMA.cs`                         | `Indicators\TV_ZLSMA.cs`                             |
-| `nt8/Indicators/TV_LSMACrossover.cs`                 | `Indicators\TV_LSMACrossover.cs`                     |
-| `nt8/Indicators/TV_SLSMA.cs`                         | `Indicators\TV_SLSMA.cs`                             |
-| `nt8/Indicators/TV_StochRVI.cs`                      | `Indicators\TV_StochRVI.cs`                          |
-| `nt8/Indicators/TV_RangeFilter.cs`                   | `Indicators\TV_RangeFilter.cs`                       |
-| `nt8/Indicators/TV_TechnicalRatingsApprox.cs`        | `Indicators\TV_TechnicalRatingsApprox.cs`            |
 | `nt8/Strategies/TV_RenkoRangeStrategy.cs`            | `Strategies\TV_RenkoRangeStrategy.cs`                |
+
+The standalone indicator files (`TV_MacZLSMA.cs`, `TV_ZLSMA.cs` etc.) and
+the `TV_SharedEnums.cs` AddOn are **optional** — they exist in the repo as
+legacy from the early pre-monolithic build phase. The strategy compiles
+and runs without them. Only install the standalone indicator files if
+you want to add individual chain stages to the chart visually for
+side-by-side TV comparison; doing so is purely cosmetic and does not
+affect signal behavior.
 
 ## 2. Compile
 
@@ -82,21 +82,101 @@ Do not enable NT8's "Exit on session close" feature in addition —
 `ForceFlatAtSessionEnd` already handles this inside the strategy. (The
 strategy sets `IsExitOnSessionCloseStrategy = false` for this reason.)
 
-## 5. Strategy parameters (defaults on load — matches client spec)
+## 5. Strategy parameters (defaults on load — current as of 2026-04-23)
 
-- Quantity: 1
-- **Reversal mode**: ReversalEnabled = true, FlattenFirst = false.
-- **Session**: 09:33 NY → 12:00 NY, Force Flat at Session End = true.
-- **Alignment filters**: macZLSMA / ZLSMA / LSMA Crossover / SLSMA /
-  Stoch RVI checked. Technical Ratings unchecked (and the indicator
-  itself disabled).
-- **macZLSMA**: length 2, offset 0, trigger 3.
-- **ZLSMA**: length 2, offset 0.
-- **LSMA Crossover**: length 2, offset 0, trigger 4, long 200, extra-long 1000.
-- **SLSMA**: length 2, offset 0.
-- **Stoch RVI**: RVI length 6, K 2, D 2, stoch length 14.
-- **Range Filter**: sampling 240, multiplier 0.1.
-- **Technical Ratings (approx)**: MA weight 30%.
+The panel groups parameters by number. Defaults match the live-tested
+configuration that produced Sean's first profitable session (11 trades,
+72.73% win, $268 net, profit factor 5.36, Sharpe 4.77 over 4/16–4/22).
+
+**01 Order sizing**
+- `Quantity`: 1 (contracts per trade — change to scale position size)
+
+**02 Reversal mode**
+- `Reversal Enabled`: true
+- `Flatten First`: false
+
+**03 Session** — NY time
+- `Session Start`: 09:33
+- `Session End`: 12:00
+- `Force Flat at Session End`: true
+
+**04 Alignment filters** (all checked indicators must agree on direction)
+- `Use Center of Gravity filter`: ✓ (default ON, Order 0)
+- `Use macZLSMA as filter`: ✓
+- `Use ZLSMA as filter`: ✓
+- `Use LSMA Crossover filter`: ✓
+- `Use SLSMA as filter`: ✓
+- `Use Stoch RVI as filter`: ✓
+- `Use Technical Ratings as filter`: ☐ (default OFF — opt-in)
+
+**05 Anti-chop filters** — all default 0 (disabled)
+- `Min Bars Between Entries`: 0  (cooldown after any trade; useful range 5-20 on Renko)
+- `Min Hold Bars`: 0  (block opposite signals until position is N bars old; useful 3-10)
+- `Signal Confirmation Bars`: 0  (delayed entry — wait N bars after signal then enter only if direction still matches; useful 2-5)
+
+**06 Risk management** — all default 0 (disabled)
+- `Stop Loss (ticks)`: 0  (NT8 native ticks. For MNQ at Value=24: 1 brick = 24 ticks = $12. 2 bricks = 48 ticks)
+- `Profit Target (ticks)`: 0  (same scale)
+- `Max Trades Per Day`: 0  (hard cap on entries per session)
+- `Daily Loss Limit ($)`: 0  (force-flat + block entries when today's session PnL ≤ -$X)
+
+**09 Center of Gravity** (the new chain bottom — Sean's preferred source)
+- `Length`: 8
+- `Smoothing (SMA)`: false
+- `Smoothing Length`: 3
+- `LSMA Length`: 202  (drives the COG: LSMA output line — preferred chain source)
+- `Previous High/Low Length`: 20  (visual-only on standalone indicator)
+- `Fib Length`: 1000  (visual-only on standalone indicator)
+- `Trigger Window`: 3  (ALMA window)
+- `Trigger Offset`: 0.85  (ALMA offset)
+- `Trigger Sigma`: 5  (ALMA sigma — Sean-tuned for closer TV parity)
+
+**10 macZLSMA**
+- `Source`: COG_LSMA  (default — pick from any other indicator's output)
+- `Length`: 2, `Offset`: 0, `Trigger Length`: 3
+
+**11 ZLSMA**
+- `Source`: MacZ_Plot
+- `Length`: 2, `Offset`: 0
+
+**12 LSMA Crossover**
+- `Source`: ZLSMA_Plot
+- `Length`: 2, `Offset`: 0, `Trigger Length`: 4
+
+**13 SLSMA (reconstructed)**
+- `Source`: LSMAC_Trigger
+- `Length`: 2, `Offset`: 0
+
+**14 Stochastic RVI**
+- `Source`: SLSMA_Plot
+- `RVI Length`: 6, `K Smoothing`: 2, `D Smoothing`: 2, `Stochastic Length`: 14
+
+**15 Range Filter**
+- `Source`: StochRVI_K
+- `Sampling Period`: 240, `Range Multiplier`: 0.1
+
+**16 Technical Ratings** (approximation; OFF by default)
+- `Rating Uses`: Oscillators Only  (live-tested default — MAs Only and Both produce too much noise on Renko)
+- `MA Set`: Standard12  (toggleable to LongOnly6 to skip short MAs that flip-flop on Renko)
+- `MA Weight (%)`: 30
+- `Longs Level`: 0.1  (rating must be ≥ this to vote long; live-tested default — TV's 0.5 doesn't translate because TV's exact formula is closed-source)
+- `Shorts Level`: -0.1
+
+### Per-stage Source dropdown options
+Every chain stage (groups 10-15) has a **Source** dropdown letting you
+re-wire the chain at runtime — TV-style flexibility. Available outputs
+to pick from: `Close`, `COG: Plot/LSMA/Trigger`, `macZLSMA: Plot/Trigger`,
+`ZLSMA: Plot`, `LSMA Crossover: LSMA/Trigger`, `SLSMA: Plot`,
+`Stoch RVI: K/D`. Compute order is fixed (COG → macZ → Z → LSMAC → SLSMA
+→ StochRVI → RF); picking a source from a later stage produces one-bar-
+lagged data — same edge case TV exhibits.
+
+### Stop Loss / Profit Target caveat
+NT8 reads these values once at strategy load (in `State.Configure`).
+**Changing those two params on a running strategy requires disabling +
+re-enabling the strategy on the chart for the new value to apply.**
+Max Trades Per Day, Daily Loss Limit, and all anti-chop filters take
+effect immediately on the next bar — no restart needed.
 
 ## 6. Running the strategy
 
