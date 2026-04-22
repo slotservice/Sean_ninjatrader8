@@ -205,11 +205,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseStochRVIFilter    = true;
                 UseTechRatingsFilter = false;   // off by default — Sean opts in when he wants the scalp helper
 
-                // Technical Ratings (rebuilt 2026-04-22 PM, Sean spec). Sean's TV defaults:
-                TechRatingsUses        = TechRatingsUseMode.Both;
+                // Technical Ratings (rebuilt 2026-04-22 PM, Sean spec).
+                // Defaults updated 2026-04-22 PM after Sean's live test: Oscillators Only +
+                // 0.1/-0.1 thresholds were the sweet spot. MAs Only / Both at his original
+                // TV-derived 0.5 levels were too restrictive (approximation distribution
+                // differs from TV's closed-library version — see ASSUMPTIONS §F4–F7).
+                TechRatingsUses        = TechRatingsUseMode.OscillatorsOnly;
                 TechRatingsMAWeight    = 30;
-                TechRatingsLongLevel   = 0.5;
-                TechRatingsShortLevel  = -0.5;
+                TechRatingsLongLevel   = 0.1;
+                TechRatingsShortLevel  = -0.1;
 
                 // Center of Gravity (Sean corrected spec 2026-04-22 PM)
                 COGLength            = 8;

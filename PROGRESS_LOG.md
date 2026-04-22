@@ -1091,6 +1091,42 @@ Third post-spec feature add this session (after anti-chop and Source
 dropdowns). Sean explicitly requested with adjustable settings; built
 to spec. Billable.
 
+### Live-test tuning (added 2026-04-22 PM, post-rebuild)
+Sean ran the rebuilt Tech Ratings through a session and produced a
+4-up visual comparison across modes. Findings:
+- **MAs Only** and **Both** at his TV-derived ±0.5 levels: clustered,
+  over-fires. MA voting flips too often on Renko (close crosses short MAs
+  constantly), so the rating spends time at extreme values and the filter
+  effectively passes most signals.
+- **Oscillators Only at ±0.1**: clean, well-spaced entries. Sean:
+  *"these seem like decent trades overall with the oscolator, something
+  like this could work in certain conditions."*
+
+Root cause of the TV-levels-don't-translate issue: TV's exact Tech
+Ratings formula (closed library) produces a different distribution of
+rating values than our public-spec approximation. Sean's TV-tuned ±0.5
+thresholds don't map 1:1 to our math — ±0.1 is the effective equivalent
+for triggering at a similar cadence.
+
+### Defaults updated (commit at end of session)
+- `TechRatingsUses` default → **OscillatorsOnly** (was Both).
+- `TechRatingsLongLevel` default → **0.1** (was 0.5).
+- `TechRatingsShortLevel` default → **−0.1** (was −0.5).
+- `TechRatingsMAWeight` default unchanged at 30 — only relevant in
+  MAs-Only or Both modes anyway; kept available for later experiments.
+
+MA-voting code path intentionally KEPT (not removed) — Sean offered to
+have it ripped out (*"we could just remove these all together if that
+is not too annoying"*) but removing functionality to change defaults
+is overkill. Dropdown still lets him pick MAs Only or Both at any time.
+
+### Sean-side NT8 usability note
+Sean reported Strategy Performance window showed $0.00 / 0 trades while
+visible trades were firing on the chart. Diagnosis: the Performance
+window's own date filter was set 4/16 → 4/21 (today is 4/22), so the
+day's live trades weren't being included in the report. Not a strategy
+bug; Sean extends the End date to resolve. Flagged in Sean-ready reply.
+
 ### Scope note (carried forward)
 Third post-spec feature add (anti-chop pack → COG → Source dropdowns).
 None of these were in the original locked spec. Per-indicator source
