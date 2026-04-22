@@ -38,14 +38,14 @@ to pull the data from").
 
 | Indicator | Settings |
 | --- | --- |
-| Center of Gravity *(added 2026-04-22, settings corrected PM)* | length 8, smoothing NONE (SMA alt, length 3), LSMA length 200, prev hi/lo length 20, fib length 1000, trigger ALMA window 3 / offset 0.85 / sigma 6, source Close |
+| Center of Gravity *(added 2026-04-22, settings tuned by Sean 2026-04-22 evening)* | length 8, smoothing NONE (SMA alt, length 3), LSMA length **202**, prev hi/lo length 20, fib length 1000, trigger ALMA window 3 / offset 0.85 / sigma **5**, source Close (LSMA Length and Sigma tuned by Sean for closer TV chart parity — visually verified side-by-side) |
 | macZLSMA | length 2, offset 0, trigger 3, source **COG: LSMA** (default — user-selectable via Source dropdown) |
 | ZLSMA | length 2, offset 0, source macZLSMA |
 | LSMA Crossover | length 2, offset 0, trigger 4, source ZLSMA |
 | SLSMA | length 2, offset 0, source LSMAC.Trigger (reconstructed indicator) |
 | Stoch RVI | RVI length 6, K 2, D 2, stoch length 14, source SLSMA |
 | Range Filter | sampling 240, multiplier 0.1, source Stoch RVI K |
-| Technical Ratings *(rebuilt monolithic 2026-04-22 PM)* | OFF by default (`Use Technical Ratings as filter` toggles it). Defaults: Rating Uses = **Oscillators Only**, MA Weight 30%, Longs Level **0.1**, Shorts Level **−0.1** (updated 2026-04-22 PM after Sean's live test — original TV-derived 0.5 levels were too restrictive against our approximation's value distribution). 12 MAs (SMA + EMA × 10/20/30/50/100/200) + 7 oscillators (RSI 14, CCI 20, MACD diff, ADX 14, Stoch K, Williams %R 14, Momentum 10) each vote ±1/0; combined per Rating Uses + MA Weight; direction set when total crosses Long/Short levels. Used as a 7th alignment vote. |
+| Technical Ratings *(rebuilt monolithic 2026-04-22 PM)* | OFF by default (`Use Technical Ratings as filter` toggles it). Defaults: Rating Uses = **Oscillators Only**, MA Set = **Standard12** (toggleable to **LongOnly6** to skip short MAs that flip-flop on Renko), MA Weight 30%, Longs Level **0.1**, Shorts Level **−0.1** (live-tested defaults). MA mix: Standard12 = SMA + EMA at 10/20/30/50/100/200 (full TV-spec subset), LongOnly6 = SMA + EMA at 50/100/200 only. 7 oscillators: RSI 14, CCI 20, MACD diff, ADX 14, Stoch K, Williams %R 14, Momentum 10. Each MA / oscillator votes ±1/0; combined per Rating Uses + MA Weight; direction set when total crosses Long/Short levels. Used as a 7th alignment vote. |
 
 ## 4. Mechanical rules (per client's final wording)
 

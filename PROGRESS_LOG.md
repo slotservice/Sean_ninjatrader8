@@ -1127,6 +1127,72 @@ window's own date filter was set 4/16 → 4/21 (today is 4/22), so the
 day's live trades weren't being included in the report. Not a strategy
 bug; Sean extends the End date to resolve. Flagged in Sean-ready reply.
 
+---
+
+## 2026-04-22 evening — COG defaults tuned + first profitable session
+
+### First real Strategy Performance numbers (Sean's PC, sim account)
+After the OscillatorsOnly default change went live, Sean ran the strategy
+through a full session window (start 4/16 → 4/22). Strategy Performance
+window numbers:
+- **Total net profit: $268.00**
+- **Total # of trades: 11** (6 long, 5 short)
+- **Percent profitable: 72.73%** (8 wins, 3 losses)
+- **Profit factor: 5.36**
+- **Sharpe ratio: 4.77**, Sortino: 1.00
+- Max consecutive winners: 6; max consecutive losers: 2
+- Largest losing trade $30.50 vs largest winning trade $80.50 — well
+  within risk:reward expectations.
+
+First time we have real-money-shaped numbers from the system. Not a
+backtest curve-fit — these are sim trades on Sean's live chart with
+the production defaults.
+
+### Sean's overnight COG tuning
+Sean tweaked two COG settings to bring NT8's COG plot visually closer
+to his TradingView chart's COG plot. Side-by-side screenshots verify
+the improved match:
+- `COGLsmaLength`: 200 → **202**
+- `COGTriggerSigma`: 6 → **5**
+
+Other COG settings unchanged (Length=8, Smoothing=NONE, Smoothing Length=3,
+Prev H/L Length=20, Fib Length=1000, Trigger Window=3, Trigger Offset=0.85).
+Promoted to defaults this commit.
+
+### MA brainstorm offered → Sean picked option (a)
+Sean asked whether the MA voting in Tech Ratings could be made useful in
+some form. Two concrete paths offered:
+- **(a) MA Set toggle** — use only long MAs (50/100/200), skipping short
+  MAs that flip-flop on Renko. ~20 min build.
+- **(b) MA slope filter** — change vote rule to "MA itself rising vs
+  falling". ~30 min build.
+
+Sean picked (a): *"the MAS (50, 100, 200), might be the way to go since
+if variations in the strategy the mas might have options to choose from
+according to instrument and renko interaction"*. Built in this commit.
+
+### MA Set toggle implementation (option a, this commit)
+- New enum: `TechRatingsMASetMode { Standard12, LongOnly6 }`.
+- New param: `TechRatingsMASet` in group "16 Technical Ratings", Order 2.
+  Default: `Standard12` (preserves prior behavior).
+- Stage 7 MA voting block forks on the enum:
+  - `Standard12`: 12 votes (SMA + EMA at 10/20/30/50/100/200), divisor 12.
+  - `LongOnly6`: 6 votes (SMA + EMA at 50/100/200 only), divisor 6.
+- No new indicator instances needed — long MAs were already allocated
+  for the Standard12 path.
+
+Sean's hypothesis: short MAs (10/20/30) flip-flop too often on Renko
+because price moves through them constantly, polluting the rating. Long
+MAs (50/100/200) only flip when there's actual structural movement, so
+LongOnly6 should give a cleaner trend-confirmation signal.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — two default values
+  updated (COGLsmaLength=202, COGTriggerSigma=5).
+- `SPEC_SUMMARY.md` — settings table row updated to reflect tuned
+  defaults.
+- `PROGRESS_LOG.md` — this entry, plus first-session-numbers record.
+
 ### Scope note (carried forward)
 Third post-spec feature add (anti-chop pack → COG → Source dropdowns).
 None of these were in the original locked spec. Per-indicator source

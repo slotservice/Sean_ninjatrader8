@@ -49,6 +49,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         Both            = 2
     }
 
+    // Which MA mix the Technical Ratings indicator votes with. Sean asked for the
+    // long-MAs-only option to skip the short MAs that flip-flop on Renko.
+    public enum TechRatingsMASetMode
+    {
+        Standard12 = 0,   // SMA + EMA at 10/20/30/50/100/200 (the documented TV mix subset)
+        LongOnly6  = 1    // SMA + EMA at 50/100/200 only (less Renko noise)
+    }
+
     // Available outputs that any chain indicator can use as its source.
     // Mirrors TradingView's "Source" dropdown — pick any other indicator's output.
     public enum TVChainSource
@@ -214,17 +222,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TechRatingsMAWeight    = 30;
                 TechRatingsLongLevel   = 0.1;
                 TechRatingsShortLevel  = -0.1;
+                TechRatingsMASet       = TechRatingsMASetMode.Standard12;
 
-                // Center of Gravity (Sean corrected spec 2026-04-22 PM)
+                // Center of Gravity (Sean spec 2026-04-22 PM, defaults tuned 2026-04-22 evening)
                 COGLength            = 8;
                 COGSmoothingEnabled  = false;   // NONE by default; SMA is the alternative
                 COGSmoothingLength   = 3;
-                COGLsmaLength        = 200;     // drives the COG: LSMA line (Sean's preferred source)
+                COGLsmaLength        = 202;     // tuned by Sean for closer TV-chart parity (was 200)
                 COGPrevHiLoLength    = 20;      // visual-only on standalone, exposed for transparency
                 COGFibLength         = 1000;    // visual-only on standalone, exposed for transparency
-                COGTriggerWindow     = 3;       // Pine ALMA defaults; Sean did not override
-                COGTriggerOffset     = 0.85;
-                COGTriggerSigma      = 6.0;
+                COGTriggerWindow     = 3;       // Pine ALMA default
+                COGTriggerOffset     = 0.85;    // Pine ALMA default
+                COGTriggerSigma      = 5.0;     // tuned by Sean for closer TV-chart parity (was 6)
 
                 // Per-stage Source dropdowns (TV-style flex). Defaults reproduce the
                 // canonical chain: COG: LSMA → macZLSMA → ZLSMA → LSMAC → SLSMA → StochRVI → RF.
@@ -770,19 +779,36 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 int maBuy = 0, maSell = 0;
                 double c = Close[0];
-                if (c > tr_sma10[0])  maBuy++; else if (c < tr_sma10[0])  maSell++;
-                if (c > tr_sma20[0])  maBuy++; else if (c < tr_sma20[0])  maSell++;
-                if (c > tr_sma30[0])  maBuy++; else if (c < tr_sma30[0])  maSell++;
-                if (c > tr_sma50[0])  maBuy++; else if (c < tr_sma50[0])  maSell++;
-                if (c > tr_sma100[0]) maBuy++; else if (c < tr_sma100[0]) maSell++;
-                if (c > tr_sma200[0]) maBuy++; else if (c < tr_sma200[0]) maSell++;
-                if (c > tr_ema10[0])  maBuy++; else if (c < tr_ema10[0])  maSell++;
-                if (c > tr_ema20[0])  maBuy++; else if (c < tr_ema20[0])  maSell++;
-                if (c > tr_ema30[0])  maBuy++; else if (c < tr_ema30[0])  maSell++;
-                if (c > tr_ema50[0])  maBuy++; else if (c < tr_ema50[0])  maSell++;
-                if (c > tr_ema100[0]) maBuy++; else if (c < tr_ema100[0]) maSell++;
-                if (c > tr_ema200[0]) maBuy++; else if (c < tr_ema200[0]) maSell++;
-                s_tr_maRating[0] = ((double)(maBuy - maSell)) / 12.0;
+                int maTotal;
+                if (TechRatingsMASet == TechRatingsMASetMode.LongOnly6)
+                {
+                    // Long MAs only — skips the short MAs that flip-flop on Renko.
+                    if (c > tr_sma50[0])  maBuy++; else if (c < tr_sma50[0])  maSell++;
+                    if (c > tr_sma100[0]) maBuy++; else if (c < tr_sma100[0]) maSell++;
+                    if (c > tr_sma200[0]) maBuy++; else if (c < tr_sma200[0]) maSell++;
+                    if (c > tr_ema50[0])  maBuy++; else if (c < tr_ema50[0])  maSell++;
+                    if (c > tr_ema100[0]) maBuy++; else if (c < tr_ema100[0]) maSell++;
+                    if (c > tr_ema200[0]) maBuy++; else if (c < tr_ema200[0]) maSell++;
+                    maTotal = 6;
+                }
+                else
+                {
+                    // Standard 12 — full TV-spec MA subset.
+                    if (c > tr_sma10[0])  maBuy++; else if (c < tr_sma10[0])  maSell++;
+                    if (c > tr_sma20[0])  maBuy++; else if (c < tr_sma20[0])  maSell++;
+                    if (c > tr_sma30[0])  maBuy++; else if (c < tr_sma30[0])  maSell++;
+                    if (c > tr_sma50[0])  maBuy++; else if (c < tr_sma50[0])  maSell++;
+                    if (c > tr_sma100[0]) maBuy++; else if (c < tr_sma100[0]) maSell++;
+                    if (c > tr_sma200[0]) maBuy++; else if (c < tr_sma200[0]) maSell++;
+                    if (c > tr_ema10[0])  maBuy++; else if (c < tr_ema10[0])  maSell++;
+                    if (c > tr_ema20[0])  maBuy++; else if (c < tr_ema20[0])  maSell++;
+                    if (c > tr_ema30[0])  maBuy++; else if (c < tr_ema30[0])  maSell++;
+                    if (c > tr_ema50[0])  maBuy++; else if (c < tr_ema50[0])  maSell++;
+                    if (c > tr_ema100[0]) maBuy++; else if (c < tr_ema100[0]) maSell++;
+                    if (c > tr_ema200[0]) maBuy++; else if (c < tr_ema200[0]) maSell++;
+                    maTotal = 12;
+                }
+                s_tr_maRating[0] = ((double)(maBuy - maSell)) / maTotal;
 
                 int oscBuy = 0, oscSell = 0;
                 if      (tr_rsi14[0] < 30)  oscBuy++;
@@ -1001,19 +1027,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Range(0.01, double.MaxValue)][Display(Name = "Range Multiplier", Order = 2, GroupName = "15 Range Filter")] public double RangeMultiplier { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Rating Uses", Order = 1, GroupName = "16 Technical Ratings", Description = "Which votes contribute to the rating: MAs only, Oscillators only, or Both (weighted by MA Weight %). Sean's TV default: Both.")]
+        [Display(Name = "Rating Uses", Order = 1, GroupName = "16 Technical Ratings", Description = "Which votes contribute to the rating: MAs only, Oscillators only, or Both (weighted by MA Weight %). Default: Oscillators Only (live-tested 2026-04-22 PM).")]
         public TechRatingsUseMode TechRatingsUses { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "MA Set", Order = 2, GroupName = "16 Technical Ratings", Description = "Which MAs to vote with. Standard12 = SMA + EMA at 10/20/30/50/100/200 (full TV-spec subset). LongOnly6 = SMA + EMA at 50/100/200 (skips short MAs that flip-flop on Renko).")]
+        public TechRatingsMASetMode TechRatingsMASet { get; set; }
+
         [NinjaScriptProperty][Range(0, 100)]
-        [Display(Name = "MA Weight (%)", Order = 2, GroupName = "16 Technical Ratings", Description = "When Rating Uses = Both, weight given to the MA rating (rest goes to oscillator rating). Sean's TV default: 30.")]
+        [Display(Name = "MA Weight (%)", Order = 3, GroupName = "16 Technical Ratings", Description = "When Rating Uses = Both, weight given to the MA rating (rest goes to oscillator rating). Default 30.")]
         public int TechRatingsMAWeight { get; set; }
 
         [NinjaScriptProperty][Range(-1.0, 1.0)]
-        [Display(Name = "Longs Level", Order = 3, GroupName = "16 Technical Ratings", Description = "Rating must be ≥ this value to vote Long. Sean's TV default: 0.5.")]
+        [Display(Name = "Longs Level", Order = 4, GroupName = "16 Technical Ratings", Description = "Rating must be ≥ this value to vote Long. Default 0.1 (live-tested).")]
         public double TechRatingsLongLevel { get; set; }
 
         [NinjaScriptProperty][Range(-1.0, 1.0)]
-        [Display(Name = "Shorts Level", Order = 4, GroupName = "16 Technical Ratings", Description = "Rating must be ≤ this value to vote Short. Sean's TV default: -0.5.")]
+        [Display(Name = "Shorts Level", Order = 5, GroupName = "16 Technical Ratings", Description = "Rating must be ≤ this value to vote Short. Default -0.1 (live-tested).")]
         public double TechRatingsShortLevel { get; set; }
 
         [NinjaScriptProperty][Range(0, int.MaxValue)]
