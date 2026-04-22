@@ -170,6 +170,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int lastTradeBar = -1;   // CurrentBar of most recent entry OR exit
         private int entryBar     = -1;   // CurrentBar at which the current open position was entered
 
+        // Risk management bookkeeping (used by group "06 Risk management" params)
+        private double dailyStartCumProfit = 0.0;   // SystemPerformance baseline at session start
+        private bool   dailyResetDone      = false; // edge-detection so reset fires once per session entry
+        private bool   dailyLimitHit       = false; // true once today's PnL hits -DailyLossLimit
+        private int    tradesToday         = 0;     // count of new entries fired this session
+
         // ==================================================================
         // State lifecycle
         // ==================================================================
@@ -270,6 +276,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MinBarsBetweenEntries  = 0;
                 MinHoldBars            = 0;
                 SignalConfirmationBars = 0;
+
+                // Risk management — all default to 0 (disabled). Existing behaviour unchanged unless enabled.
+                StopLossTicks     = 0;     // hard stop in ticks (NT8 native unit). 0 disables.
+                ProfitTargetTicks = 0;     // hard target in ticks. 0 disables.
+                MaxTradesPerDay   = 0;     // max entries per session. 0 disables.
+                DailyLossLimit    = 0.0;   // session loss limit in account currency (USD). 0 disables.
+            }
+            else if (State == State.Configure)
+            {
+                // Wire NT8's auto-attached stop/target orders. Called once per strategy
+                // load — user must restart strategy to apply changes to these params.
+                if (StopLossTicks > 0)
+                    SetStopLoss(CalculationMode.Ticks, StopLossTicks);
+                if (ProfitTargetTicks > 0)
+                    SetProfitTarget(CalculationMode.Ticks, ProfitTargetTicks);
             }
             else if (State == State.DataLoaded)
             {
@@ -384,7 +405,53 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            if (!inSession) return;
+            if (!inSession)
+            {
+                // Outside the session window — reset the daily-counter edge so the next
+                // session-entry triggers a fresh baseline.
+                dailyResetDone = false;
+                return;
+            }
+
+            // ---- Session-start reset for daily counters (group "06 Risk management") ----
+            // Edge-fires once per session entry. Snapshots the cumulative profit baseline
+            // so today's PnL can be computed by subtraction later.
+            if (!dailyResetDone)
+            {
+                dailyStartCumProfit = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
+                tradesToday    = 0;
+                dailyLimitHit  = false;
+                dailyResetDone = true;
+            }
+
+            // ---- Daily loss limit check ----
+            // Computes today's PnL = (cum profit since session start) + (open position unrealized).
+            // When breached, force-flat any open position and block entries for the rest of the session.
+            if (DailyLossLimit > 0 && !dailyLimitHit)
+            {
+                double realized   = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit - dailyStartCumProfit;
+                double unrealized = Position.MarketPosition != MarketPosition.Flat
+                    ? Position.GetUnrealizedProfitLoss(PerformanceUnit.Currency, Close[0])
+                    : 0.0;
+                double dailyPnL = realized + unrealized;
+
+                if (dailyPnL <= -DailyLossLimit)
+                {
+                    dailyLimitHit = true;
+                    if (Position.MarketPosition == MarketPosition.Long)
+                        ExitLong(Convert.ToInt32(Position.Quantity), "DailyLossLimit", SIG_LONG);
+                    else if (Position.MarketPosition == MarketPosition.Short)
+                        ExitShort(Convert.ToInt32(Position.Quantity), "DailyLossLimit", SIG_SHORT);
+
+                    lastTradeBar      = CurrentBar;
+                    entryBar          = -1;
+                    pendingReentryDir = 0;
+                    return;
+                }
+            }
+
+            // If daily loss limit was hit earlier in this session, block all further entries.
+            if (dailyLimitHit) return;
 
             // ---- Read Range Filter final signal ----
             double rfSignal = s_rf_signal[0];
@@ -407,6 +474,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     for (int i = 0; i < SignalConfirmationBars; i++)
                         if ((int)s_rf_dir[i] != signalDir) return;
                 }
+
+                // Filter 0 (group 06 Risk management): MaxTradesPerDay — hard cap on
+                // entries per session. Counts new entries (incl. reversals + pending re-entries),
+                // resets at session start.
+                if (MaxTradesPerDay > 0 && tradesToday >= MaxTradesPerDay) return;
 
                 // Filter 1: MinBarsBetweenEntries — cooldown after any prior trade.
                 if (MinBarsBetweenEntries > 0 && lastTradeBar >= 0
@@ -437,6 +509,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     pendingReentryDir = 0;
                     entryBar          = CurrentBar;
                     lastTradeBar      = CurrentBar;
+                    tradesToday++;
                     return;
                 }
                 if (signalDir != 0 && signalDir != pendingReentryDir)
@@ -470,6 +543,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         EnterLong(Quantity, SIG_LONG);
                         entryBar = CurrentBar;
+                        tradesToday++;
                     }
                     else if (ReversalEnabled && FlattenFirst)
                     {
@@ -482,6 +556,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     EnterLong(Quantity, SIG_LONG);
                     entryBar     = CurrentBar;
                     lastTradeBar = CurrentBar;
+                    tradesToday++;
                 }
             }
             else if (signalDir < 0)
@@ -496,6 +571,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         EnterShort(Quantity, SIG_SHORT);
                         entryBar = CurrentBar;
+                        tradesToday++;
                     }
                     else if (ReversalEnabled && FlattenFirst)
                     {
@@ -508,6 +584,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     EnterShort(Quantity, SIG_SHORT);
                     entryBar     = CurrentBar;
                     lastTradeBar = CurrentBar;
+                    tradesToday++;
                 }
             }
         }
@@ -1045,6 +1122,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Range(-1.0, 1.0)]
         [Display(Name = "Shorts Level", Order = 5, GroupName = "16 Technical Ratings", Description = "Rating must be ≤ this value to vote Short. Default -0.1 (live-tested).")]
         public double TechRatingsShortLevel { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Stop Loss (ticks)", Description = "Hard stop-loss in NT8 ticks. For MNQ at this chart's Value=24 setting: 1 brick = 24 ticks = $12. 2 bricks = 48 ticks. 0 disables.", Order = 1, GroupName = "06 Risk management")]
+        public int StopLossTicks { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Profit Target (ticks)", Description = "Hard profit-target in NT8 ticks. Same scale as Stop Loss. 0 disables.", Order = 2, GroupName = "06 Risk management")]
+        public int ProfitTargetTicks { get; set; }
+
+        [NinjaScriptProperty][Range(0, int.MaxValue)]
+        [Display(Name = "Max Trades Per Day", Description = "Hard cap on entries per session window. Resets at session start. 0 disables.", Order = 3, GroupName = "06 Risk management")]
+        public int MaxTradesPerDay { get; set; }
+
+        [NinjaScriptProperty][Range(0.0, double.MaxValue)]
+        [Display(Name = "Daily Loss Limit ($)", Description = "Force-flat any open position and block new entries when today's session PnL drops to -$X. Resets at session start. 0 disables.", Order = 4, GroupName = "06 Risk management")]
+        public double DailyLossLimit { get; set; }
 
         [NinjaScriptProperty][Range(0, int.MaxValue)]
         [Display(Name = "Min Bars Between Entries", Description = "Skip new entries for N bars after any prior entry/exit. 0 disables.", Order = 1, GroupName = "05 Anti-chop filters")]

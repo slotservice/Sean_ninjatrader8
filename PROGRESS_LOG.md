@@ -1186,6 +1186,99 @@ because price moves through them constantly, polluting the rating. Long
 MAs (50/100/200) only flip when there's actual structural movement, so
 LongOnly6 should give a cleaner trend-confirmation signal.
 
+---
+
+## 2026-04-22 evening — Risk management pack added (project wrap-up)
+
+### Context
+At the project wrap-up moment (Sean had said *"i expect beyond this point
+we done with the project"*), he asked for one last addition:
+> *"can we still add the loss limit, contract sizing and these other
+> standard crieria? would this considered within still the approprate
+> amount? i need to at least be capable of adjusting the instrument and
+> contract sizing accourdingly."*
+
+Two parts to address:
+1. **Contract sizing + instrument adjustability** — already in the
+   strategy. `Quantity` param (group "01 Order sizing", default 1)
+   controls contract count. Instrument is set by whichever chart the
+   strategy runs on. Clarified to client; no new code needed.
+2. **Loss limit + standard risk-management criteria** — genuinely
+   missing. Built as wrap-up at no additional charge on top of the
+   agreed $1,400 (relationship + future-business value > $100-200 of
+   additional billing). Sean confirmed scope: *"daily loss limit, hard
+   stop-loss in ticks, and max trades per day, plus optionally a
+   profit-target — this is great and should be sufficient."*
+
+### Renko brick / tick math clarification
+Sean asked whether 1 Renko brick = 4 ticks. Quick correction:
+- 1 MNQ point = 4 ticks (tick definition)
+- His chart's `Value = 24` setting = 24 ticks per brick = 6 points per
+  brick = $12 P&L per contract per brick.
+- So 1 brick stop = 24 ticks, 2 bricks = 48 ticks, 4 bricks = 96 ticks.
+- NT8's stop-loss param uses raw ticks; Sean thinks in bricks.
+
+### Implementation
+Four new params in group "06 Risk management", all defaulting to 0
+(disabled) so existing behaviour is unchanged unless opted in.
+
+**`Stop Loss (ticks)` and `Profit Target (ticks)`:**
+- Wired via NT8's `SetStopLoss(CalculationMode.Ticks, n)` and
+  `SetProfitTarget(CalculationMode.Ticks, n)` in `State.Configure`.
+- NT8 manages auto-attach + intrabar fire on tick basis (bypasses
+  `Calculate.OnBarClose` for the stop-target logic).
+- **Caveat**: param changes apply only on next strategy load (Configure
+  runs once). Sean must disable + re-enable strategy to change values.
+  Documented in param tooltip.
+
+**`Max Trades Per Day`:**
+- Integer counter `tradesToday`, reset to 0 at session start (edge-fire
+  via `dailyResetDone` flag).
+- Incremented at all 5 entry call sites (pending re-entry, long+short
+  reversal entry, long+flat entry, short+long reversal entry,
+  short+flat entry).
+- Block in the anti-chop filter block: `if (MaxTradesPerDay > 0 &&
+  tradesToday >= MaxTradesPerDay) return;` — gates new entries while
+  still allowing exits to fire.
+
+**`Daily Loss Limit ($)`:**
+- Snapshot `dailyStartCumProfit` from
+  `SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit`
+  at session start.
+- Per-bar check: realized today = current cum profit − baseline;
+  unrealized = `Position.GetUnrealizedProfitLoss(PerformanceUnit.
+  Currency, Close[0])`. Total today = realized + unrealized.
+- When total ≤ -DailyLossLimit, force-flat any open position
+  (`ExitLong` / `ExitShort` tagged `"DailyLossLimit"`) and set
+  `dailyLimitHit = true` to block all further entries until next
+  session reset.
+- Reset alongside the trade counter at session start.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — 4 fields, State.Configure
+  block for SetStopLoss/SetProfitTarget, session-reset logic, daily-PnL
+  check + force-flat, MaxTradesPerDay block in anti-chop filter,
+  tradesToday increments at 5 entry sites, 4 new params in group "06
+  Risk management".
+- `SPEC_SUMMARY.md` — Risk Management row added to settings table.
+- `ASSUMPTIONS_LOG.md` — new section §I (I1–I7) covering tick units,
+  wiring, counter semantics, daily-PnL math, exit-signal naming,
+  defaults, and the wrap-up-scope billing note.
+- `PROGRESS_LOG.md` — this entry.
+
+### Compile + rollout
+- Freelancer dev machine: clean compile.
+- Pending: deploy to Sean's PC via AnyDesk after current NYC session
+  ends (he's actively running the prior build in production sim, don't
+  interrupt).
+
+### Scope + billing note
+This is the LAST feature add of the contract per Sean's stated wrap-up
+intent. Total billing remains $1,400 — risk management folded in as
+goodwill closing-out work, not billable. Project closes after Sean
+deploys this build and confirms it works. The remaining $400 milestone
+in escrow can be released after final deploy + confirmation.
+
 ### Files changed
 - `nt8/Strategies/TV_RenkoRangeStrategy.cs` — two default values
   updated (COGLsmaLength=202, COGTriggerSigma=5).
