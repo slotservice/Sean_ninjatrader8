@@ -41,6 +41,14 @@ using NinjaTrader.NinjaScript.DrawingTools;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
+    // Which component(s) of Technical Ratings contribute to the rating value.
+    public enum TechRatingsUseMode
+    {
+        MAsOnly         = 0,
+        OscillatorsOnly = 1,
+        Both            = 2
+    }
+
     // Available outputs that any chain indicator can use as its source.
     // Mirrors TradingView's "Source" dropdown — pick any other indicator's output.
     public enum TVChainSource
@@ -105,6 +113,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Series<double> s_sr_d;
         private Series<double> s_sr_dir;
 
+        // Stage 7: Technical Ratings (rebuilt monolithic 2026-04-22 PM, Sean spec)
+        // 12 MAs + 7 oscillators voting, combined per MA-weight, direction set at Long/Short levels.
+        // *** APPROXIMATION *** — TV's exact implementation pulls from the closed
+        // TradingView/TechnicalRating/3 library; this matches publicly-documented voting rules.
+        private Indicators.SMA  tr_sma10, tr_sma20, tr_sma30, tr_sma50, tr_sma100, tr_sma200;
+        private Indicators.EMA  tr_ema10, tr_ema20, tr_ema30, tr_ema50, tr_ema100, tr_ema200;
+        private Indicators.RSI  tr_rsi14;
+        private Indicators.CCI  tr_cci20;
+        private Indicators.MACD tr_macd;
+        private Indicators.ADX  tr_adx14;
+        private Indicators.StochasticsFast tr_stoch;
+        private Indicators.WilliamsR tr_wr14;
+        private Indicators.Momentum tr_mom10;
+        private Series<double> s_tr_maRating;
+        private Series<double> s_tr_oscRating;
+        private Series<double> s_tr_total;
+        private Series<double> s_tr_dir;
+
         // Stage 6: Range Filter
         private Series<double> s_rf_absChange;
         private Series<double> s_rf_avrng;
@@ -166,7 +192,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Quantity              = 1;
                 ReversalEnabled       = true;
                 FlattenFirst          = false;
-                UseTechnicalRatings   = false;   // approx removed from monolithic build
                 ForceFlatAtSessionEnd = true;
 
                 SessionStart = new TimeSpan(9, 33, 0);
@@ -178,7 +203,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseLSMACFilter       = true;
                 UseSLSMAFilter       = true;
                 UseStochRVIFilter    = true;
-                UseTechRatingsFilter = false;
+                UseTechRatingsFilter = false;   // off by default — Sean opts in when he wants the scalp helper
+
+                // Technical Ratings (rebuilt 2026-04-22 PM, Sean spec). Sean's TV defaults:
+                TechRatingsUses        = TechRatingsUseMode.Both;
+                TechRatingsMAWeight    = 30;
+                TechRatingsLongLevel   = 0.5;
+                TechRatingsShortLevel  = -0.5;
 
                 // Center of Gravity (Sean corrected spec 2026-04-22 PM)
                 COGLength            = 8;
@@ -266,6 +297,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 s_sr_k        = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_sr_d        = new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_sr_dir      = new Series<double>(this, MaximumBarsLookBack.Infinite);
+
+                // Technical Ratings — NT8 built-in indicator instances (safe, framework, not auto-gen).
+                tr_sma10  = SMA(10);   tr_sma20  = SMA(20);   tr_sma30  = SMA(30);
+                tr_sma50  = SMA(50);   tr_sma100 = SMA(100);  tr_sma200 = SMA(200);
+                tr_ema10  = EMA(10);   tr_ema20  = EMA(20);   tr_ema30  = EMA(30);
+                tr_ema50  = EMA(50);   tr_ema100 = EMA(100);  tr_ema200 = EMA(200);
+                tr_rsi14  = RSI(14, 3);
+                tr_cci20  = CCI(20);
+                tr_macd   = MACD(12, 26, 9);
+                tr_adx14  = ADX(14);
+                tr_stoch  = StochasticsFast(3, 14);
+                tr_wr14   = WilliamsR(14);
+                tr_mom10  = Momentum(10);
+
+                s_tr_maRating  = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_tr_oscRating = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_tr_total     = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                s_tr_dir       = new Series<double>(this, MaximumBarsLookBack.Infinite);
 
                 s_rf_absChange= new Series<double>(this, MaximumBarsLookBack.Infinite);
                 s_rf_avrng    = new Series<double>(this, MaximumBarsLookBack.Infinite);
@@ -708,6 +757,65 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             s_rf_signal[0] = longSignal ? 1 : shortSignal ? -1 : 0;
             s_rf_dir[0]    = s_rf_upward[0] > 0 ? 1 : s_rf_downward[0] > 0 ? -1 : 0;
+
+            // ---------------- Stage 7: Technical Ratings (parallel — not in chain) ----------------
+            // 12 MAs + 7 oscillators each vote +1 / 0 / -1. Combined with MA weight per Sean's spec.
+            // Direction set when total crosses Long/Short levels.
+            // Skip computation if not in use AND not used as filter — saves cycles on every bar.
+            if (UseTechRatingsFilter && CurrentBar >= 200)
+            {
+                int maBuy = 0, maSell = 0;
+                double c = Close[0];
+                if (c > tr_sma10[0])  maBuy++; else if (c < tr_sma10[0])  maSell++;
+                if (c > tr_sma20[0])  maBuy++; else if (c < tr_sma20[0])  maSell++;
+                if (c > tr_sma30[0])  maBuy++; else if (c < tr_sma30[0])  maSell++;
+                if (c > tr_sma50[0])  maBuy++; else if (c < tr_sma50[0])  maSell++;
+                if (c > tr_sma100[0]) maBuy++; else if (c < tr_sma100[0]) maSell++;
+                if (c > tr_sma200[0]) maBuy++; else if (c < tr_sma200[0]) maSell++;
+                if (c > tr_ema10[0])  maBuy++; else if (c < tr_ema10[0])  maSell++;
+                if (c > tr_ema20[0])  maBuy++; else if (c < tr_ema20[0])  maSell++;
+                if (c > tr_ema30[0])  maBuy++; else if (c < tr_ema30[0])  maSell++;
+                if (c > tr_ema50[0])  maBuy++; else if (c < tr_ema50[0])  maSell++;
+                if (c > tr_ema100[0]) maBuy++; else if (c < tr_ema100[0]) maSell++;
+                if (c > tr_ema200[0]) maBuy++; else if (c < tr_ema200[0]) maSell++;
+                s_tr_maRating[0] = ((double)(maBuy - maSell)) / 12.0;
+
+                int oscBuy = 0, oscSell = 0;
+                if      (tr_rsi14[0] < 30)  oscBuy++;
+                else if (tr_rsi14[0] > 70)  oscSell++;
+                if      (tr_cci20[0] < -100) oscBuy++;
+                else if (tr_cci20[0] >  100) oscSell++;
+                if      (tr_macd.Diff[0] > 0) oscBuy++;
+                else if (tr_macd.Diff[0] < 0) oscSell++;
+                if (tr_adx14[0] > 25)
+                {
+                    if      (Close[0] > Close[1]) oscBuy++;
+                    else if (Close[0] < Close[1]) oscSell++;
+                }
+                if      (tr_stoch.K[0] < 20) oscBuy++;
+                else if (tr_stoch.K[0] > 80) oscSell++;
+                if      (tr_wr14[0] < -80) oscBuy++;
+                else if (tr_wr14[0] > -20) oscSell++;
+                if      (tr_mom10[0] > 0) oscBuy++;
+                else if (tr_mom10[0] < 0) oscSell++;
+                s_tr_oscRating[0] = ((double)(oscBuy - oscSell)) / 7.0;
+
+                double total;
+                switch (TechRatingsUses)
+                {
+                    case TechRatingsUseMode.MAsOnly:         total = s_tr_maRating[0]; break;
+                    case TechRatingsUseMode.OscillatorsOnly: total = s_tr_oscRating[0]; break;
+                    default: // Both
+                        double w = TechRatingsMAWeight / 100.0;
+                        total = w * s_tr_maRating[0] + (1.0 - w) * s_tr_oscRating[0];
+                        break;
+                }
+                s_tr_total[0] = total;
+
+                if      (total >= TechRatingsLongLevel)  s_tr_dir[0] = 1;
+                else if (total <= TechRatingsShortLevel) s_tr_dir[0] = -1;
+                else                                     s_tr_dir[0] = 0;
+            }
         }
 
         // ==================================================================
@@ -776,12 +884,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool CheckAlignment(int signalDir)
         {
             if (signalDir == 0) return false;
-            if (UseCOGFilter      && (int)s_cog_dir[0] != signalDir) return false;
-            if (UseMacZLSMAFilter && (int)s_mz_dir[0]  != signalDir) return false;
-            if (UseZLSMAFilter    && (int)s_z_dir[0]   != signalDir) return false;
-            if (UseLSMACFilter    && (int)s_lc_dir[0]  != signalDir) return false;
-            if (UseSLSMAFilter    && (int)s_sl_dir[0]  != signalDir) return false;
-            if (UseStochRVIFilter && (int)s_sr_dir[0]  != signalDir) return false;
+            if (UseCOGFilter         && (int)s_cog_dir[0] != signalDir) return false;
+            if (UseMacZLSMAFilter    && (int)s_mz_dir[0]  != signalDir) return false;
+            if (UseZLSMAFilter       && (int)s_z_dir[0]   != signalDir) return false;
+            if (UseLSMACFilter       && (int)s_lc_dir[0]  != signalDir) return false;
+            if (UseSLSMAFilter       && (int)s_sl_dir[0]  != signalDir) return false;
+            if (UseStochRVIFilter    && (int)s_sr_dir[0]  != signalDir) return false;
+            if (UseTechRatingsFilter && (int)s_tr_dir[0]  != signalDir) return false;
             return true;
         }
 
@@ -821,8 +930,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Display(Name = "Use LSMA Crossover filter", Order = 3, GroupName = "04 Alignment filters")] public bool UseLSMACFilter      { get; set; }
         [NinjaScriptProperty][Display(Name = "Use SLSMA as filter",       Order = 4, GroupName = "04 Alignment filters")] public bool UseSLSMAFilter      { get; set; }
         [NinjaScriptProperty][Display(Name = "Use Stoch RVI as filter",   Order = 5, GroupName = "04 Alignment filters")] public bool UseStochRVIFilter   { get; set; }
-        [NinjaScriptProperty][Display(Name = "Use Tech Ratings filter",   Order = 6, GroupName = "04 Alignment filters", Description = "Reserved — Technical Ratings approximation not included in monolithic build.")] public bool UseTechRatingsFilter { get; set; }
-        [NinjaScriptProperty][Display(Name = "Use Technical Ratings",     Order = 7, GroupName = "04 Alignment filters", Description = "Reserved — not wired in monolithic build.")] public bool UseTechnicalRatings { get; set; }
+        [NinjaScriptProperty][Display(Name = "Use Technical Ratings as filter", Order = 6, GroupName = "04 Alignment filters", Description = "When on, the Technical Ratings rating direction must agree with the trade signal before entry. Settings live in group 16.")] public bool UseTechRatingsFilter { get; set; }
 
         [NinjaScriptProperty][Range(1, int.MaxValue)]
         [Display(Name = "Length", Order = 1, GroupName = "09 Center of Gravity")]
@@ -887,6 +995,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty][Display(Name = "Source",             Order = 0, GroupName = "15 Range Filter", Description = "Pick the input series for the Range Filter signal generator. Default: Stoch RVI: K.")] public TVChainSource RangeFilterSource { get; set; }
         [NinjaScriptProperty][Range(1, int.MaxValue)]      [Display(Name = "Sampling Period",  Order = 1, GroupName = "15 Range Filter")] public int    SamplingPeriod  { get; set; }
         [NinjaScriptProperty][Range(0.01, double.MaxValue)][Display(Name = "Range Multiplier", Order = 2, GroupName = "15 Range Filter")] public double RangeMultiplier { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Rating Uses", Order = 1, GroupName = "16 Technical Ratings", Description = "Which votes contribute to the rating: MAs only, Oscillators only, or Both (weighted by MA Weight %). Sean's TV default: Both.")]
+        public TechRatingsUseMode TechRatingsUses { get; set; }
+
+        [NinjaScriptProperty][Range(0, 100)]
+        [Display(Name = "MA Weight (%)", Order = 2, GroupName = "16 Technical Ratings", Description = "When Rating Uses = Both, weight given to the MA rating (rest goes to oscillator rating). Sean's TV default: 30.")]
+        public int TechRatingsMAWeight { get; set; }
+
+        [NinjaScriptProperty][Range(-1.0, 1.0)]
+        [Display(Name = "Longs Level", Order = 3, GroupName = "16 Technical Ratings", Description = "Rating must be ≥ this value to vote Long. Sean's TV default: 0.5.")]
+        public double TechRatingsLongLevel { get; set; }
+
+        [NinjaScriptProperty][Range(-1.0, 1.0)]
+        [Display(Name = "Shorts Level", Order = 4, GroupName = "16 Technical Ratings", Description = "Rating must be ≤ this value to vote Short. Sean's TV default: -0.5.")]
+        public double TechRatingsShortLevel { get; set; }
 
         [NinjaScriptProperty][Range(0, int.MaxValue)]
         [Display(Name = "Min Bars Between Entries", Description = "Skip new entries for N bars after any prior entry/exit. 0 disables.", Order = 1, GroupName = "05 Anti-chop filters")]

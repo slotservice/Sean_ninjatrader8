@@ -45,7 +45,7 @@ to pull the data from").
 | SLSMA | length 2, offset 0, source LSMAC.Trigger (reconstructed indicator) |
 | Stoch RVI | RVI length 6, K 2, D 2, stoch length 14, source SLSMA |
 | Range Filter | sampling 240, multiplier 0.1, source Stoch RVI K |
-| Technical Ratings | OFF by default; MAs+Oscillators, MA weight 30%, columns |
+| Technical Ratings *(rebuilt monolithic 2026-04-22 PM)* | OFF by default (`Use Technical Ratings as filter` toggles it). Sean's TV defaults: Rating Uses = Both, MA Weight 30%, Longs Level 0.5, Shorts Level −0.5. 12 MAs (SMA + EMA × 10/20/30/50/100/200) + 7 oscillators (RSI 14, CCI 20, MACD diff, ADX 14, Stoch K, Williams %R 14, Momentum 10) each vote ±1/0; combined per Rating Uses + MA Weight; direction set when total crosses Long/Short levels. Used as a 7th alignment vote. |
 
 ## 4. Mechanical rules (per client's final wording)
 

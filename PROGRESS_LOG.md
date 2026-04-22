@@ -1010,6 +1010,87 @@ Compiled clean on freelancer's dev machine on first attempt.
    **Confirmed by Sean 2026-04-22 PM: 200 is correct.** Build already
    matches; no code change needed.
 
+---
+
+## 2026-04-22 PM — Technical Ratings rebuilt monolithic
+
+### Context
+Sean asked about the two Tech Ratings checkboxes on the strategy panel
+("Use Tech Ratings filter" and "Use Technical Ratings") and noticed they
+didn't seem to do anything. Diagnosis: both were stubs left over from the
+original (pre-monolithic) design where Tech Ratings was a separate
+indicator wired in alongside the chain. The monolithic rewrite (2026-04-22
+AM) dropped the Tech Ratings logic but left the two toggles on the panel.
+
+Sean opted to have it rebuilt with adjustable settings:
+> *"if you can bring it back with the ma+oscolators in some comparable
+> fashion that would be ideal... if you can get an approxmation where
+> i could make adjustments i think that will eventually be helpful."*
+
+He also confirmed his TV defaults (Rating Uses = Both, MA Weight 30%,
+Longs Level 0.5, Shorts Level −0.5) via the Inputs panel screenshot.
+
+### Implementation (`TV_RenkoRangeStrategy.cs` Stage 7)
+- 19 NT8 built-in indicator instances allocated in `State.DataLoaded`:
+  6 SMAs + 6 EMAs (lengths 10/20/30/50/100/200) + RSI(14,3) + CCI(20) +
+  MACD(12,26,9) + ADX(14) + StochasticsFast(3,14) + WilliamsR(14) +
+  Momentum(10). Built-ins are framework-cached, no factory-method
+  auto-gen risk (the thing that broke Sean's install in early April —
+  see PROGRESS_LOG 2026-04-22 AM for that scar).
+- 4 new Series fields: `s_tr_maRating`, `s_tr_oscRating`, `s_tr_total`,
+  `s_tr_dir`.
+- Stage 7 in `ComputeChain`: 12 MAs vote (close vs MA), 7 oscillators
+  vote per documented thresholds (see ASSUMPTIONS §F4–F5), combined
+  per `TechRatingsUses` enum + `TechRatingsMAWeight`, direction set when
+  total crosses Long/Short levels.
+- Computation gated on `if (UseTechRatingsFilter && CurrentBar >= 200)`
+  — saves cycles when toggle is off.
+- New `TechRatingsUseMode` enum: `MAsOnly` / `OscillatorsOnly` / `Both`.
+- New "16 Technical Ratings" param group: `Rating Uses`, `MA Weight (%)`,
+  `Longs Level`, `Shorts Level` — all match Sean's TV defaults.
+- `CheckAlignment` extended to include the Tech Ratings vote when
+  `UseTechRatingsFilter` is on.
+
+### Cleanup
+- Removed the dead `UseTechnicalRatings` checkbox (no functional purpose
+  with the unified toggle).
+- Renamed `UseTechRatingsFilter` display to **"Use Technical Ratings as
+  filter"** to match the alignment-filter naming convention used by the
+  other checkboxes in group 04.
+
+### Approximation policy (carried forward)
+TV's exact Tech Ratings pulls from the closed `TradingView/TechnicalRating/3`
+library — bar-identical parity is impossible. Implemented mix is a subset
+of TV's documented 15 MAs + 11 oscillators (12 + 7 here). Hull MA, VWMA,
+Ichimoku Base Line MA votes intentionally omitted to keep the build tight.
+ADX vote is a Close-direction proxy (we don't compute DI+/DI− separately).
+Sean accepted the approximation explicitly in chat. See ASSUMPTIONS §F4–F7.
+
+### Defaults
+`UseTechRatingsFilter = false` — Sean must opt in. With the toggle off,
+Stage 7 doesn't run and existing strategy behaviour is unchanged.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — enum, fields, allocation,
+  Stage 7 computation, alignment hook, param group, dead-checkbox removal.
+- `SPEC_SUMMARY.md` — Tech Ratings row in settings table updated to
+  reflect rebuilt module + Sean's defaults.
+- `ASSUMPTIONS_LOG.md` — F3 superseded; F4–F7 added (MA mix, oscillator
+  vote rules, combined rating math, approximation policy).
+- `PROGRESS_LOG.md` — this entry.
+
+### Compile + rollout
+- Freelancer dev machine: **clean compile** on first attempt.
+- Pending: deploy to Sean's PC via AnyDesk.
+- Sean's test plan: enable `Use Technical Ratings as filter`, see if the
+  added vote helps with scalp exits. Defaults match his TV settings so
+  rating values should track TV directionally.
+
+### Scope note for billing
+Third post-spec feature add this session (after anti-chop and Source
+dropdowns). Sean explicitly requested with adjustable settings; built
+to spec. Billable.
+
 ### Scope note (carried forward)
 Third post-spec feature add (anti-chop pack → COG → Source dropdowns).
 None of these were in the original locked spec. Per-indicator source
