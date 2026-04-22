@@ -166,6 +166,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int pendingReentryDir;
         private int pendingReentryBar;
 
+        // SignalConfirmationBars (delayed-entry) bookkeeping — added 2026-04-23
+        // When a signal fires, queue here for N bars. Promote to actual entry only
+        // if Range Filter direction still matches signalDir at the end of the wait.
+        private int pendingSignalDir = 0;   // 0 = none, +1 = pending long, -1 = pending short
+        private int pendingSignalBar = 0;   // CurrentBar when the original signal fired
+
         // Anti-chop bookkeeping (used by group "05 Anti-chop filters" params)
         private int lastTradeBar = -1;   // CurrentBar of most recent entry OR exit
         private int entryBar     = -1;   // CurrentBar at which the current open position was entered
@@ -402,14 +408,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 lastTradeBar      = CurrentBar;
                 entryBar          = -1;
                 pendingReentryDir = 0;
+                pendingSignalDir  = 0;
                 return;
             }
 
             if (!inSession)
             {
                 // Outside the session window — reset the daily-counter edge so the next
-                // session-entry triggers a fresh baseline.
-                dailyResetDone = false;
+                // session-entry triggers a fresh baseline. Also drop any stale pending
+                // signal so it doesn't carry into the next session.
+                dailyResetDone   = false;
+                pendingSignalDir = 0;
                 return;
             }
 
@@ -446,6 +455,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastTradeBar      = CurrentBar;
                     entryBar          = -1;
                     pendingReentryDir = 0;
+                    pendingSignalDir  = 0;
                     return;
                 }
             }
@@ -455,10 +465,56 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // ---- Read Range Filter final signal ----
             double rfSignal = s_rf_signal[0];
-            if (rfSignal == 0 && pendingReentryDir == 0) return;
+            if (rfSignal == 0 && pendingReentryDir == 0 && pendingSignalDir == 0) return;
 
             int signalDir = (int)Math.Sign(rfSignal);
             bool aligned  = CheckAlignment(signalDir);
+
+            // ---- SignalConfirmationBars (delayed-entry pattern, option a) ----
+            // Sat outside the anti-chop block because it has to handle BOTH a fresh
+            // signal (queue + skip) and a pending signal check (no fresh signal this bar).
+            // The previous lookback implementation was structurally broken: Range Filter
+            // direction by definition flips on a signal bar, so checking s_rf_dir[0..N-1]
+            // could never pass at N≥2. This delayed-entry version waits N bars after the
+            // signal and only fires if Range Filter direction still matches.
+            if (SignalConfirmationBars > 0)
+            {
+                // Fresh signal this bar — queue as pending, skip immediate entry.
+                if (signalDir != 0)
+                {
+                    pendingSignalDir = signalDir;
+                    pendingSignalBar = CurrentBar;
+                    return;
+                }
+
+                // No fresh signal — check the pending queue.
+                if (pendingSignalDir != 0)
+                {
+                    int rfDir = (int)s_rf_dir[0];
+
+                    // Drop pending if Range Filter direction reversed during the wait.
+                    if (rfDir != 0 && rfDir != pendingSignalDir)
+                    {
+                        pendingSignalDir = 0;
+                        return;
+                    }
+
+                    int barsWaited = CurrentBar - pendingSignalBar;
+                    if (barsWaited >= SignalConfirmationBars && rfDir == pendingSignalDir)
+                    {
+                        // Promote: synthesize as if it were a fresh signal this bar.
+                        signalDir = pendingSignalDir;
+                        rfSignal  = pendingSignalDir;
+                        aligned   = CheckAlignment(signalDir);
+                        pendingSignalDir = 0;
+                        // Fall through to the rest of the logic (anti-chop, entry).
+                    }
+                    else
+                    {
+                        return;  // still waiting
+                    }
+                }
+            }
 
             // ---- Anti-chop filters (group "05 Anti-chop filters") ----
             // Only relevant when there is an active signal this bar (signalDir != 0).
@@ -466,15 +522,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             // attempts for this bar.
             if (signalDir != 0)
             {
-                // Filter 3: SignalConfirmationBars — RF direction must have been
-                // consistent with signalDir for the prior N bars (current bar inclusive).
-                if (SignalConfirmationBars > 0)
-                {
-                    if (CurrentBar < SignalConfirmationBars) return;
-                    for (int i = 0; i < SignalConfirmationBars; i++)
-                        if ((int)s_rf_dir[i] != signalDir) return;
-                }
-
                 // Filter 0 (group 06 Risk management): MaxTradesPerDay — hard cap on
                 // entries per session. Counts new entries (incl. reversals + pending re-entries),
                 // resets at session start.
@@ -1148,7 +1195,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int MinHoldBars { get; set; }
 
         [NinjaScriptProperty][Range(0, int.MaxValue)]
-        [Display(Name = "Signal Confirmation Bars", Description = "Range Filter direction must be consistent for the prior N bars (current bar inclusive) before a signal can fire. 0 disables.", Order = 3, GroupName = "05 Anti-chop filters")]
+        [Display(Name = "Signal Confirmation Bars", Description = "Delayed-entry: when a signal fires, wait N bars and only enter if Range Filter direction still matches. If direction reverses during the wait, the signal is dropped. 0 disables (immediate entry).", Order = 3, GroupName = "05 Anti-chop filters")]
         public int SignalConfirmationBars { get; set; }
         #endregion
     }

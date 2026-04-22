@@ -1292,3 +1292,76 @@ None of these were in the original locked spec. Per-indicator source
 flexibility is meaningful net-new scope — was specifically pitched as
 billable add-on before building, Sean accepted with the
 *"yes i need the sources to be interchangeable"* response.
+
+---
+
+## 2026-04-23 — SignalConfirmationBars bug fix (delayed-entry, option a)
+
+### Context
+SignalConfirmationBars was diagnosed broken back on 2026-04-22: the
+lookback implementation required `s_rf_dir[0..N-1]` all equal `signalDir`,
+but the Range Filter signal mechanics make this logically impossible
+at N≥2 (direction by definition flips on the signal bar — `prevIni == -1`
+short-mode → `longCond` → `upward[0] = 1` means `downward` was > 0 last bar).
+Sean confirmed the symptom: *"the Signal Confirmation Bars can only be
+set to=1 or it will not plot"*.
+
+Two fix paths offered:
+- **(a)** Delayed entry: wait N bars after signal, enter only if direction
+  still matches.
+- **(b)** Use COG direction (not Range Filter direction) as the
+  consistency check.
+
+Sean picked (a): *"wait N bars after a signal then enter only if
+direction still matches is perfect"*.
+
+### Implementation
+- New private fields: `pendingSignalDir` (0/+1/−1), `pendingSignalBar`
+  (CurrentBar at queue time).
+- Old broken lookback check inside the anti-chop block: REMOVED.
+- New `SignalConfirmationBars` block sits BEFORE the anti-chop block
+  because it has to handle two cases on different bars:
+  - **Fresh signal (signalDir != 0)**: queue as pending, return early
+    (no immediate entry).
+  - **No fresh signal but pending exists**: check Range Filter direction:
+    - If direction reversed during wait → drop pending, return.
+    - If `barsWaited >= SignalConfirmationBars` AND direction still
+      matches → promote (synthesize signalDir + rfSignal as if fresh
+      this bar), re-check alignment, fall through to anti-chop + entry.
+    - Otherwise → still waiting, return.
+- Early-return condition extended to include pending signal:
+  `if (rfSignal == 0 && pendingReentryDir == 0 && pendingSignalDir == 0) return;`
+  so the pending check actually runs on no-signal bars.
+- Pending state reset on: session-end force-flat, daily-loss-limit
+  force-flat, and exit-from-session edge — prevents stale pendings
+  carrying into the next session.
+- Param tooltip updated to reflect new semantics: *"Delayed-entry: when
+  a signal fires, wait N bars and only enter if Range Filter direction
+  still matches. If direction reverses during the wait, the signal is
+  dropped. 0 disables (immediate entry)."*
+
+### Behaviour at N values
+- **N=0**: disabled — immediate entry on signal (existing behavior).
+- **N=1**: 1-bar delay — signal queued, fires next bar if direction still matches.
+- **N=2-5**: practical anti-chop range. Signal queued, fires N bars later
+  if direction held. Drops if Range Filter flipped direction during wait.
+- **N=10+**: heavy filter, blocks most signals (Renko direction tends to
+  oscillate within 10 bars during chop). Probably not useful in practice.
+
+### Files changed
+- `nt8/Strategies/TV_RenkoRangeStrategy.cs` — 2 new fields, removed
+  broken inline check, added new pending-signal block, extended early-
+  return condition, added 3 reset sites for `pendingSignalDir`, updated
+  param tooltip.
+- `PROGRESS_LOG.md` — this entry.
+
+### Compile + rollout
+- Freelancer dev machine: clean compile.
+- Pending: deploy to Sean's PC via AnyDesk + sign-off.
+
+### Project status
+This is genuinely the LAST code change of the contract. Sean's stated
+wrap was after the previous risk-management build; this fix folds in as
+final polish since the bug was identified earlier and Sean had been
+waiting on the fix-path decision. Total billing remains $1,400; project
+closes after deploy + final $400 milestone release.
